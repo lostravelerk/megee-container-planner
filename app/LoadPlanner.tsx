@@ -1,12 +1,42 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { countAlong, packRectangles } from "../lib/packing.js";
 
 type Mode = "carton" | "pallet";
 type ViewMode = "top" | "side" | "front" | "pallet";
 type Dimensions = { l: number; w: number; h: number };
 type Position = { x: number; y: number; w: number; h: number; rotated: boolean };
+type ProductInfo = { series: string; code: string; name: string; specification: string };
+type WorkspaceView = "library" | "planner";
+
+type SavedPlan = {
+  id: string;
+  version: number;
+  createdAt: string;
+  product: ProductInfo;
+  mode: Mode;
+  carton: Dimensions;
+  pallet: Dimensions;
+  container: Dimensions;
+  containerType: string;
+  eaPerBox: number | "";
+  palletHeightLimit: number;
+  edgeInset: number;
+  cartonTolerance: number;
+  cartonGap: number;
+  palletTolerance: number;
+  palletGap: number;
+  doorClearance: number;
+  sideClearance: number;
+  topClearance: number;
+  profile: string;
+  totalCartons: number;
+  totalEa: number | null;
+  status: "待复核" | "已复核";
+};
+
+const PLAN_STORAGE_KEY = "megee-loadwise-plans-v1";
 
 const CONTAINERS: Record<string, Dimensions> = {
   "20GP": { l: 5898, w: 2352, h: 2393 },
@@ -309,9 +339,11 @@ function calculateLoadPlan(config: CalculationConfig) {
 }
 
 export default function LoadPlanner() {
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("planner");
   const [mode, setMode] = useState<Mode>("carton");
   const [view, setView] = useState<ViewMode>("top");
   const [carton, setCarton] = useState<Dimensions>(DEFAULTS.carton);
+  const [productInfo, setProductInfo] = useState<ProductInfo>({ series: "", code: "", name: "", specification: "" });
   const [pallet, setPallet] = useState<Dimensions>(DEFAULTS.pallet);
   const [container, setContainer] = useState<Dimensions>(DEFAULTS.container);
   const [containerType, setContainerType] = useState("40HQ");
@@ -326,15 +358,30 @@ export default function LoadPlanner() {
   const [palletHeightLimit, setPalletHeightLimit] = useState(1650);
   const [eaPerBox, setEaPerBox] = useState<number | "">("");
   const [profile, setProfile] = useState("标准");
+  const [savedPlans, setSavedPlans] = useState<SavedPlan[]>([]);
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [saveNotice, setSaveNotice] = useState("");
 
-  const calculationBase = {
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const stored = window.localStorage.getItem(PLAN_STORAGE_KEY);
+        if (stored) setSavedPlans(JSON.parse(stored) as SavedPlan[]);
+      } catch {
+        setSaveNotice("当前浏览器无法读取本地方案库，请检查隐私设置。");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const calculationBase = useMemo(() => ({
     mode, carton, pallet, cartonTolerance, cartonGap, palletTolerance, palletGap,
     edgeInset, doorClearance, sideClearance, topClearance, palletHeightLimit,
-  };
+  }), [mode, carton, pallet, cartonTolerance, cartonGap, palletTolerance, palletGap, edgeInset, doorClearance, sideClearance, topClearance, palletHeightLimit]);
 
   const result = useMemo(
     () => calculateLoadPlan({ ...calculationBase, container }),
-    [carton, pallet, container, cartonTolerance, cartonGap, palletTolerance, palletGap, edgeInset, doorClearance, sideClearance, topClearance, palletHeightLimit, mode],
+    [calculationBase, container],
   );
 
   const standardComparisons = useMemo(
@@ -343,7 +390,7 @@ export default function LoadPlanner() {
       dimensions,
       plan: calculateLoadPlan({ ...calculationBase, container: dimensions }),
     })),
-    [carton, pallet, cartonTolerance, cartonGap, palletTolerance, palletGap, edgeInset, doorClearance, sideClearance, topClearance, palletHeightLimit, mode],
+    [calculationBase],
   );
 
   const updateDimension = (
@@ -375,6 +422,7 @@ export default function LoadPlanner() {
 
   const resetAll = () => {
     setCarton(DEFAULTS.carton);
+    setProductInfo({ series: "", code: "", name: "", specification: "" });
     setPallet(DEFAULTS.pallet);
     setContainer(DEFAULTS.container);
     setContainerType("40HQ");
@@ -398,26 +446,159 @@ export default function LoadPlanner() {
   const reportDate = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const reportNumber = `LW-${containerType}-${carton.l}${carton.w}${carton.h}-${result.total}`;
 
+  const visiblePlans = useMemo(() => {
+    const query = librarySearch.trim().toLocaleLowerCase("zh-CN");
+    if (!query) return savedPlans;
+    return savedPlans.filter((plan) =>
+      [plan.product.code, plan.product.name, plan.product.series, plan.product.specification]
+        .some((value) => value.toLocaleLowerCase("zh-CN").includes(query)),
+    );
+  }, [librarySearch, savedPlans]);
+
+  const saveCurrentPlan = () => {
+    const sameProductPlans = savedPlans.filter((plan) =>
+      plan.product.code && plan.product.code === productInfo.code,
+    );
+    const nextPlan: SavedPlan = {
+      id: crypto.randomUUID(),
+      version: Math.max(0, ...sameProductPlans.map((plan) => plan.version)) + 1,
+      createdAt: new Date().toISOString(),
+      product: productInfo,
+      mode,
+      carton,
+      pallet,
+      container,
+      containerType,
+      eaPerBox,
+      palletHeightLimit,
+      edgeInset,
+      cartonTolerance,
+      cartonGap,
+      palletTolerance,
+      palletGap,
+      doorClearance,
+      sideClearance,
+      topClearance,
+      profile,
+      totalCartons: result.total,
+      totalEa,
+      status: "待复核",
+    };
+    const nextPlans = [nextPlan, ...savedPlans];
+    setSavedPlans(nextPlans);
+    window.localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(nextPlans));
+    setSaveNotice(`方案 V${nextPlan.version} 已保存到当前浏览器。`);
+  };
+
+  const openSavedPlan = (plan: SavedPlan, printAfterOpen = false) => {
+    setProductInfo(plan.product);
+    setMode(plan.mode);
+    setCarton(plan.carton);
+    setPallet(plan.pallet);
+    setContainer(plan.container);
+    setContainerType(plan.containerType);
+    setEaPerBox(plan.eaPerBox);
+    setPalletHeightLimit(plan.palletHeightLimit);
+    setEdgeInset(plan.edgeInset);
+    setCartonTolerance(plan.cartonTolerance);
+    setCartonGap(plan.cartonGap);
+    setPalletTolerance(plan.palletTolerance);
+    setPalletGap(plan.palletGap);
+    setDoorClearance(plan.doorClearance);
+    setSideClearance(plan.sideClearance);
+    setTopClearance(plan.topClearance);
+    setProfile(plan.profile);
+    setWorkspaceView("planner");
+    if (printAfterOpen) window.setTimeout(() => window.print(), 250);
+  };
+
   return (
     <main>
       <header className="site-header">
-        <div className="brand-mark">L</div>
+        <div className="brand-mark" aria-hidden="true"><span>M</span></div>
         <div className="brand-copy">
-          <p className="eyebrow">LOADWISE</p>
+          <p className="eyebrow">浙江美集实业有限公司</p>
           <h1>集装箱装柜规划</h1>
         </div>
+        <nav className="main-nav" aria-label="主工作区">
+          <button className={workspaceView === "library" ? "active" : ""} onClick={() => setWorkspaceView("library")}>产品方案库</button>
+          <button className={workspaceView === "planner" ? "active" : ""} onClick={() => setWorkspaceView("planner")}>装柜规划器</button>
+        </nav>
         <div className="header-actions">
           <button className="text-button" onClick={resetAll}>恢复默认</button>
           <button className="text-button" onClick={() => window.print()}>输出报告</button>
-          <div className="status-pill"><span /> 本地计算</div>
+          <div className="status-pill"><span /> Cloudflare 运行</div>
         </div>
       </header>
 
       <section className="intro">
-        <p>输入实际尺寸，自动比较纸箱与托盘的双向混排方案。计算在浏览器内完成。</p>
+        <p>从产品主数据到可视化最优装柜，再到客户报告，一套完整、可追溯的包装决策工作台。</p>
       </section>
 
-      <section className="mode-section" aria-labelledby="package-unit-label">
+      {workspaceView === "library" && (
+        <section className="library-workspace" aria-labelledby="library-title">
+          <div className="library-hero panel">
+            <div>
+              <p className="section-kicker">PRODUCT PLAN LIBRARY</p>
+              <h2 id="library-title">产品装柜方案库</h2>
+              <p>集中管理每个 SKU 的包装参数、最优柜型与正式客户报告。</p>
+            </div>
+            <div className="library-actions">
+              <button className="sync-button" onClick={() => setSaveNotice("等待提供 Cost 只读 API、鉴权方式与内网路由后即可启用自动同步。")}>同步 Cost 主数据 <span>↻</span></button>
+              <button className="new-plan-button" onClick={() => setWorkspaceView("planner")}>新建装柜方案 <span>＋</span></button>
+            </div>
+          </div>
+
+          <div className="library-toolbar">
+            <label className="library-search"><span>⌕</span><input value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder="搜索产品代码、品名、系列或规格" /></label>
+            <div className="library-sync-state"><i /> Cost 连接待配置 <b>最后同步：—</b></div>
+          </div>
+
+          <div className="library-stats">
+            <article><span>方案总数</span><strong>{savedPlans.length}</strong><small>个版本</small></article>
+            <article><span>覆盖产品</span><strong>{new Set(savedPlans.map((plan) => plan.product.code || plan.product.name)).size}</strong><small>个 SKU</small></article>
+            <article><span>待复核</span><strong>{savedPlans.filter((plan) => plan.status === "待复核").length}</strong><small>项方案</small></article>
+            <article><span>Cost 主数据</span><strong>—</strong><small>等待接口</small></article>
+          </div>
+
+          {saveNotice && <div className="library-notice" role="status"><span>i</span>{saveNotice}</div>}
+
+          {visiblePlans.length > 0 ? (
+            <div className="plan-library-grid">
+              {visiblePlans.map((plan) => (
+                <article className="saved-plan-card panel" key={plan.id}>
+                  <div className="saved-plan-top">
+                    <span className="product-monogram">{(plan.product.series || plan.product.name || "M").slice(0, 1)}</span>
+                    <div><p>{plan.product.series || "未填写产品系列"}</p><h3>{plan.product.name || "未命名产品"}</h3><code>{plan.product.code || "NO PRODUCT CODE"}</code></div>
+                    <em className={plan.status === "已复核" ? "approved" : ""}>{plan.status}</em>
+                  </div>
+                  <dl>
+                    <div><dt>规格</dt><dd>{plan.product.specification || "—"}</dd></div>
+                    <div><dt>包装方式</dt><dd>{plan.mode === "carton" ? "纸箱直装" : "托盘 + 纸箱"}</dd></div>
+                    <div><dt>推荐柜型</dt><dd>{plan.containerType === "40HQ" ? "40HQ / 40HC" : plan.containerType}</dd></div>
+                    <div><dt>装箱结果</dt><dd>{formatNumber(plan.totalCartons)} BOX{plan.totalEa === null ? "" : ` · ${formatNumber(plan.totalEa)} EA`}</dd></div>
+                  </dl>
+                  <div className="saved-plan-meta"><span>V{plan.version}</span><time>{new Intl.DateTimeFormat("zh-CN").format(new Date(plan.createdAt))}</time></div>
+                  <div className="saved-plan-actions">
+                    <button onClick={() => openSavedPlan(plan)}>打开方案</button>
+                    <button className="report-link" onClick={() => openSavedPlan(plan, true)}>查看客户报告 ↗</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-library panel">
+              <div className="empty-orbit"><span>M</span></div>
+              <p className="section-kicker">READY FOR SYNC</p>
+              <h2>{librarySearch ? "没有匹配的装柜方案" : "方案库已就绪"}</h2>
+              <p>{librarySearch ? "请调整搜索条件。" : "连接 Cost 后将自动同步产品主数据；现在也可以先创建并保存第一份装柜方案。"}</p>
+              {!librarySearch && <button onClick={() => setWorkspaceView("planner")}>创建第一份方案</button>}
+            </div>
+          )}
+        </section>
+      )}
+
+      {workspaceView === "planner" && <><section className="mode-section" aria-labelledby="package-unit-label">
         <p className="mode-label" id="package-unit-label">最大包装单元</p>
         <div className="mode-switcher" aria-label="最大包装单元选择">
         <button className={mode === "carton" ? "active" : ""} onClick={() => switchMode("carton")}>
@@ -436,6 +617,20 @@ export default function LoadPlanner() {
             <span>单位 mm</span>
           </div>
 
+          <div className="field-group product-group">
+            <div className="product-heading">
+              <h3><i>SKU</i> 产品信息</h3>
+              <span>成本平台主数据</span>
+            </div>
+            <div className="product-fields">
+              <label>产品家族 / 系列号<input value={productInfo.series} placeholder="请选择或填写" onChange={(event) => setProductInfo({ ...productInfo, series: event.target.value })} /></label>
+              <label>产品代码<input value={productInfo.code} placeholder="SKU / Product Code" onChange={(event) => setProductInfo({ ...productInfo, code: event.target.value })} /></label>
+              <label>品名<input value={productInfo.name} placeholder="产品名称" onChange={(event) => setProductInfo({ ...productInfo, name: event.target.value })} /></label>
+              <label>规格<input value={productInfo.specification} placeholder="型号 / 规格描述" onChange={(event) => setProductInfo({ ...productInfo, specification: event.target.value })} /></label>
+            </div>
+            <div className="sync-status"><span /> cost.megee-inc.com <b>cMacStudio@WorkBuddy · 待连接</b></div>
+          </div>
+
           <div className="field-group">
             <h3><i>1</i> 纸箱尺寸</h3>
             <div className="field-row">
@@ -443,7 +638,7 @@ export default function LoadPlanner() {
               <NumberInput label="宽度" value={carton.w} min={10} onChange={(value) => updateDimension(setCarton, carton, "w", value)} />
               <NumberInput label="高度" value={carton.h} min={10} onChange={(value) => updateDimension(setCarton, carton, "h", value)} />
             </div>
-            <label className="ea-input">每箱成品数量 <span>EA/BOX</span>
+            <label className="ea-input">装箱数量 <span>EA/BOX</span>
               <input
                 type="number"
                 value={eaPerBox}
@@ -654,18 +849,27 @@ export default function LoadPlanner() {
 
           <div className="panel report-action-card">
             <div><p className="section-kicker">正式交付文件</p><h2>装柜方案报告</h2><span>包含参数、数量、EA、三柜型比较、多剖面图和复核签字栏。</span></div>
-            <button onClick={() => window.print()}>打印 / 存为 PDF <b>↗</b></button>
+            <div className="report-actions"><button className="save-plan-button" onClick={saveCurrentPlan}>保存到方案库 <b>＋</b></button><button onClick={() => window.print()}>打印 / 存为 PDF <b>↗</b></button></div>
           </div>
+
+          {saveNotice && <div className="planner-notice" role="status">{saveNotice}</div>}
 
           <p className="method-note">计算方法：在箱高固定朝上、底面仅旋转 90° 的约束内，全量枚举横向与纵向规则分带组合；先最大化包装单元数量，数量相同再优先选择余隙更规整的方案。结果为上述规则内最优工程预估，不替代现场装柜与承重校核。</p>
         </section>
-      </div>
+      </div></>}
 
       <section className="print-report">
         <header className="report-header">
-          <div><p>MEGEE · LOADWISE</p><h1>集装箱装柜方案报告</h1><span>Container Loading Plan Report</span></div>
+          <div><p>浙江美集实业有限公司 · MEGEE</p><h1>集装箱装柜方案报告</h1><span>Container Loading Plan Report</span></div>
           <dl><div><dt>报告编号</dt><dd>{reportNumber}</dd></div><div><dt>生成日期</dt><dd>{reportDate}</dd></div><div><dt>方案状态</dt><dd>规则内最优</dd></div></dl>
         </header>
+
+        <section className="report-product-block">
+          <div><span>产品家族 / 系列号</span><b>{productInfo.series || "未填写"}</b></div>
+          <div><span>产品代码</span><b>{productInfo.code || "未填写"}</b></div>
+          <div><span>品名</span><b>{productInfo.name || "未填写"}</b></div>
+          <div><span>规格</span><b>{productInfo.specification || "未填写"}</b></div>
+        </section>
 
         <div className="report-summary-grid">
           <div><span>最大包装单元</span><b>{mode === "carton" ? "纸箱" : "托盘"}</b></div>

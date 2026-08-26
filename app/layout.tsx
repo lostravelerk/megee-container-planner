@@ -18,8 +18,8 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "LoadWise 集装箱装柜规划";
-  const description = "纸箱与托盘最大包装单元可选，支持公差、安全空隙和多剖面可视化的装柜计算工具。";
+  const title = "浙江美集实业有限公司｜集装箱装柜规划";
+  const description = "浙江美集实业有限公司纸箱与托盘装柜规划工具，支持公差、安全空隙、多剖面可视化、产品方案库与正式客户报告。";
 
   return {
     metadataBase: new URL(origin),

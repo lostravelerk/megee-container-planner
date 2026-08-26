@@ -1,4 +1,4 @@
-# LoadWise 集装箱装柜规划
+# 浙江美集实业有限公司 · 集装箱装柜规划
 
 一个本地优先的可视化装柜计算工具。最大包装单元可选择纸箱或托盘，支持尺寸、公差、安全空隙和多剖面查看。
 
@@ -10,6 +10,8 @@
 - 20GP、40GP、40HQ 与自定义集装箱内部尺寸
 - 20GP、40GP、40HQ/40HC 三种柜型同步对比
 - EA/BOX 可选输入（无默认值），输入后同步换算总 EA
+- 产品方案库支持保存方案版本、重新打开和直接查看客户报告
+- Cost 只读同步白名单：产品家族/系列号、产品代码、品名、规格、装箱数量（EA/BOX）
 - 纸箱、托盘尺寸、公差、间隙、退边与集装箱安全余量均可编辑
 - 箱高固定朝上，底面允许 90° 旋转；搜索横向、纵向和混合分带方案
 - 俯视水平剖面、侧视纵向剖面、箱门端视横向剖面；托盘模式另有单托盘排箱图
@@ -17,6 +19,14 @@
 - 一键输出正式装柜报告，可打印或保存为 PDF
 
 详细发布门槛见 [ACCEPTANCE.md](./ACCEPTANCE.md)。
+
+## 当前发布
+
+- Cloudflare Workers：<https://loadwise-container-planner.lostravelerk-717.workers.dev>
+- 已移除 ChatGPT Sites 运行配置，正式构建不会发布到 `chatgpt.site`。
+- `workers.dev` 在部分中国大陆网络的连通性不能保证；正式客户使用建议绑定由 Cloudflare 管理的自有域名。
+- Cost 账号 `cMacStudio@WorkBuddy` 已列为只读同步身份。真实自动同步仍需可由 Worker 访问的 API/Tunnel 与服务凭据；详细契约见 [docs/COST_INTEGRATION.md](./docs/COST_INTEGRATION.md)。
+- 接口接通前，方案库保存于当前浏览器；不得把该状态误称为公司级云端同步。
 
 ## 本地运行
 
@@ -33,6 +43,8 @@ npm run dev
 
 ```bash
 npm test
+npm run lint
+npx wrangler deploy --dry-run
 ```
 
 测试包含生产构建、页面渲染、分享元数据和排箱算法边界/重叠检查。

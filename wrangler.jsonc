@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "loadwise-container-planner",
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "no_bundle": true,
+  "rules": [
+    { "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "dist/client"
+  },
+  "observability": { "enabled": true }
+}

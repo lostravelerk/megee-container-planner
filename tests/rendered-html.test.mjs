@@ -14,13 +14,15 @@ async function render() {
   );
 }
 
-test("server-renders the finished LoadWise planner", async () => {
+test("server-renders the finished Megee planner", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>LoadWise 集装箱装柜规划<\/title>/i);
+  assert.match(html, /<title>浙江美集实业有限公司｜集装箱装柜规划<\/title>/i);
+  assert.match(html, /浙江美集实业有限公司/);
+  assert.match(html, /产品方案库/);
   assert.match(html, /最大包装单元/);
   assert.match(html, /纸箱/);
   assert.match(html, /托盘/);
@@ -41,7 +43,7 @@ test("keeps Megee carton, pallet and height defaults in source", async () => {
 test("emits absolute social metadata from the incoming host", async () => {
   const response = await render();
   const html = await response.text();
-  assert.match(html, /property="og:title" content="LoadWise 集装箱装柜规划"/i);
+  assert.match(html, /property="og:title" content="浙江美集实业有限公司｜集装箱装柜规划"/i);
   assert.match(html, /property="og:image" content="https:\/\/loadwise\.example\/og\.png"/i);
   assert.match(html, /name="twitter:card" content="summary_large_image"/i);
 });
