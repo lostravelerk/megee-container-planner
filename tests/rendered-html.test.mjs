@@ -37,7 +37,8 @@ test("keeps Megee carton, pallet and height defaults in source", async () => {
   const source = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
   assert.match(source, /carton:\s*\{\s*l:\s*480,\s*w:\s*380,\s*h:\s*350\s*\}/);
   assert.match(source, /pallet:\s*\{\s*l:\s*1000,\s*w:\s*1200,\s*h:\s*150\s*\}/);
-  assert.match(source, /useState\(1650\)/);
+  assert.match(source, /useState\(1800\)/);
+  assert.match(source, /useState\(70\)/);
 });
 
 test("emits absolute social metadata from the incoming host", async () => {

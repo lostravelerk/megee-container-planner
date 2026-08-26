@@ -6,8 +6,7 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
-  compatibility_date: "2026-08-26",
-  compatibility_flags: ["nodejs_compat"],
+  compatibility_date: "2026-05-22",
 };
 
 export default defineConfig(async () => {

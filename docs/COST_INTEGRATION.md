@@ -5,12 +5,13 @@
 ## 1. 同步范围（严格白名单）
 
 - 以 `productCode` 作为跨系统唯一键。
-- 只同步：产品家族/系列号、产品代码、品名、规格、装箱数量。
+- 只同步：产品家族/系列号、产品代码、品名、装箱数量。
 - Cost 的“装箱数量”映射为 container-planner 的 `EA/BOX`，允许为空，不设置默认值。
 - 不同步纸箱尺寸、托盘尺寸、柜型、公差、成本、BOM、客户或其他业务字段。
 - 纸箱/托盘参数和装柜方案由 container-planner 独立维护，Cost 同步不得覆盖。
 - 治理字段：Cost 记录更新时间、同步时间、数据状态、来源版本。
 - Cost 为主数据源；装柜系统只读，不向 Cost 回写。
+- 报告备注在装柜系统内人工填写并随方案版本保存，不从 Cost 同步，也不回写 Cost。
 
 ## 2. 建议响应
 
@@ -22,7 +23,6 @@
       "productSeries": "string",
       "productCode": "string",
       "productName": "string",
-      "specification": "string",
       "packingQuantity": null,
       "updatedAt": "2026-08-26T00:00:00Z"
     }

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { countAlong, packRectangles } from "../lib/packing.js";
+import {
+  calculateChargeableVolumeCbm,
+  countAlong,
+  optimizePalletStacking,
+  packRectangles,
+} from "../lib/packing.js";
 
 function assertValidPlan(plan, surfaceL, surfaceW, gap = 0) {
   assert.equal(plan.count, plan.positions.length);
@@ -53,4 +58,38 @@ test("standard allowances produce a valid 20-pallet 40HQ floor plan", () => {
   const plan = packRectangles(12032 - 80, 2352 - 60, 1200 + 10, 1000 + 10, 20);
   assert.equal(plan.count, 20);
   assertValidPlan(plan, 11952, 2292, 20);
+});
+
+test("calculates freight CBM from the measured packaging envelope", () => {
+  assert.equal(calculateChargeableVolumeCbm(20, 1010, 1210, 1562), 38.178404);
+  assert.equal(calculateChargeableVolumeCbm(0, 1010, 1210, 1562), 0);
+  assert.equal(calculateChargeableVolumeCbm(20, -1, 1210, 1562), 0);
+});
+
+test("selects double-stacked flat-bottom pallets only when they add cartons", () => {
+  const highCube = optimizePalletStacking(2698 - 50, 150, 350 + 3, 1000, 1650, true);
+  assert.equal(highCube.stackLevels, 2);
+  assert.equal(highCube.layersPerPallet, 3);
+  assert.equal(highCube.totalCartonLayers, 6);
+  assert.equal(highCube.stackHeight, 1209);
+  assert.equal(highCube.columnHeight, 2418);
+
+  const generalPurpose = optimizePalletStacking(2393 - 50, 150, 350 + 3, 1000, 1650, true);
+  assert.equal(generalPurpose.stackLevels, 1, "a quantity tie should use fewer pallets");
+  assert.equal(generalPurpose.layersPerPallet, 4);
+  assert.equal(generalPurpose.totalCartonLayers, 4);
+});
+
+test("can disable double pallet stacking", () => {
+  const plan = optimizePalletStacking(2698 - 50, 150, 350 + 3, 1000, 1650, false);
+  assert.equal(plan.stackLevels, 1);
+  assert.equal(plan.layersPerPallet, 4);
+});
+
+test("honors the customer pallet-height range before considering a double stack", () => {
+  const plan = optimizePalletStacking(2698 - 50, 150, 350 + 3, 1500, 1800, true);
+  assert.equal(plan.stackLevels, 1);
+  assert.equal(plan.layersPerPallet, 4);
+  assert.equal(plan.stackHeight, 1562);
+  assert.equal(plan.heightQualified, true);
 });
