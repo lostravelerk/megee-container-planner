@@ -4,8 +4,31 @@ import { cartonsForDemand, planMixedContainers } from "../lib/mixedPacking.js";
 
 const CONTAINER = { l: 12032, w: 2352, h: 2698 };
 
-function item(id, requestedEa, eaPerBox, carton) {
-  return { id, series: id, code: id, name: id, requestedEa, eaPerBox, carton };
+function item(id, productQuantity, eaPerBox, carton) {
+  return { id, series: id, code: id, name: id, productQuantity, eaPerBox, carton };
+}
+
+function assertValidGeometry(result) {
+  for (const container of result.containers) {
+    assert.ok(container.usedLength <= result.effectiveContainer.l + 0.001);
+    for (const [index, position] of container.positions.entries()) {
+      assert.ok(position.x >= -0.001);
+      assert.ok(position.y >= -0.001);
+      assert.ok(position.x + position.w <= result.effectiveContainer.l + 0.001);
+      assert.ok(position.y + position.h <= result.effectiveContainer.w + 0.001);
+      const block = container.blocks.find((entry) => entry.item.id === position.skuId);
+      assert.ok(position.stackUnits * block.item.loadingUnit.h <= result.effectiveContainer.h + 0.001);
+      for (const other of container.positions.slice(index + 1)) {
+        const sameSku = position.skuId === other.skuId;
+        const requiredGap = sameSku ? block.item.unitGap : result.config.skuGap;
+        const separated = position.x + position.w + requiredGap <= other.x + 0.05
+          || other.x + other.w + requiredGap <= position.x + 0.05
+          || position.y + position.h + requiredGap <= other.y + 0.05
+          || other.y + other.h + requiredGap <= position.y + 0.05;
+        assert.ok(separated, `overlap/gap failure between ${position.skuId} and ${other.skuId}`);
+      }
+    }
+  }
 }
 
 test("rounds demand up to complete cartons", () => {
@@ -22,13 +45,43 @@ test("plans different upright carton sizes without crossing effective boundaries
   assert.equal(result.unplanned.length, 0);
   assert.equal(result.plannedBoxes, 34);
   assert.equal(result.plannedEa, 15400);
-  for (const container of result.containers) {
-    assert.ok(container.usedLength <= result.effectiveContainer.l + 0.001);
-    for (const position of container.positions) {
-      assert.ok(position.x + position.w <= result.effectiveContainer.l + 0.001);
-      assert.ok(position.y + position.h <= result.effectiveContainer.w + 0.001);
-    }
-  }
+  assertValidGeometry(result);
+});
+
+test("mixes 0 and 90 degree floor orientations inside one SKU zone to reduce occupied length", () => {
+  const result = planMixedContainers([
+    item("MIX-A", 96_005, 500, { l: 480, w: 380, h: 350 }),
+    item("MIX-B", 54_003, 300, { l: 420, w: 320, h: 280 }),
+  ], CONTAINER);
+  const first = result.containers[0];
+  const productA = first.blocks.find((block) => block.item.id === "MIX-A");
+  assert.equal(result.plannedBoxes, 374);
+  assert.equal(result.demandFulfillment, 100);
+  assert.equal(productA.positions.length, 28);
+  assert.ok(productA.normalFloorPositions > 0);
+  assert.ok(productA.rotatedFloorPositions > 0);
+  assert.ok(productA.length < 2711, `expected compact mixed orientation, got ${productA.length} mm`);
+  assert.ok(first.usedLength <= 3744.1);
+  assertValidGeometry(result);
+});
+
+test("plans carton and pallet SKUs together without converting pallet rows back to direct cartons", () => {
+  const result = planMixedContainers([
+    { ...item("CARTON", 10_000, 500, { l: 480, w: 380, h: 350 }), packaging: "carton" },
+    { ...item("PALLET", 30_000, 300, { l: 420, w: 320, h: 280 }), packaging: "pallet", pallet: { l: 1000, w: 1200, h: 150 } },
+  ], CONTAINER);
+  const palletBlock = result.containers[0].blocks.find((block) => block.item.id === "PALLET");
+  assert.equal(result.unplanned.length, 0);
+  assert.equal(result.totalRequiredBoxes, 120);
+  assert.equal(result.totalRequiredPallets, 4);
+  assert.equal(result.plannedBoxes, 120);
+  assert.equal(result.plannedEa, 40_000);
+  assert.equal(palletBlock.loadedPallets, 4);
+  assert.equal(palletBlock.cartonsPerPallet, 32);
+  assert.equal(palletBlock.partialPalletBoxes, 4);
+  assert.equal(palletBlock.layers, 2);
+  assert.ok(palletBlock.palletStackHeight >= 1200 && palletBlock.palletStackHeight <= 1800);
+  assertValidGeometry(result);
 });
 
 test("splits a large demand into multiple containers without dropping cartons", () => {
@@ -38,6 +91,7 @@ test("splits a large demand into multiple containers without dropping cartons", 
   assert.ok(result.containers.length > 1);
   assert.equal(result.plannedBoxes, 2000);
   assert.equal(result.unplanned.length, 0);
+  assertValidGeometry(result);
 });
 
 test("counts a partial final carton as a full-size loading unit and places it in the final SKU block", () => {
@@ -61,6 +115,29 @@ test("counts a partial final carton as a full-size loading unit and places it in
   assert.equal(result.containers[1].positions.at(-1).w, 50);
   assert.equal(result.containers[1].positions.at(-1).h, 50);
   assert.deepEqual(result.containers.map((plan) => plan.totalBoxes), [2, 1]);
+  assertValidGeometry(result);
+});
+
+test("keeps the tail carton in the last floor position with no full carton above it", () => {
+  const result = planMixedContainers([
+    item("TAIL-TOP", 96_005, 500, { l: 480, w: 380, h: 350 }),
+  ], CONTAINER);
+  const block = result.containers.at(-1).blocks.at(-1);
+  const position = block.positions.at(-1);
+  assert.equal(block.partialCartonEa, 5);
+  assert.equal(position.partialCartonEa, 5);
+  assert.equal(position.partialOnTop, true);
+  assert.ok(position.stackUnits <= block.layers);
+  assertValidGeometry(result);
+});
+
+test("rejects a pallet footprint that cannot cross the effective container section", () => {
+  const result = planMixedContainers([
+    { ...item("BIG-PLT", 1_000, 100, { l: 300, w: 200, h: 200 }), packaging: "pallet", pallet: { l: 3000, w: 3000, h: 150 } },
+  ], CONTAINER);
+  assert.equal(result.containers.length, 0);
+  assert.equal(result.unplanned.length, 1);
+  assert.equal(result.plannedBoxes, 0);
 });
 
 test("reports cartons that cannot fit instead of silently losing demand", () => {
@@ -70,4 +147,43 @@ test("reports cartons that cannot fit instead of silently losing demand", () => 
   assert.equal(result.containers.length, 0);
   assert.equal(result.plannedBoxes, 0);
   assert.equal(result.unplanned.length, 1);
+});
+
+test("keeps counts, gaps and boundaries valid across deterministic mixed-SKU stress cases", () => {
+  let seed = 2_408_2026;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0x1_0000_0000;
+  };
+  for (let scenario = 0; scenario < 60; scenario += 1) {
+    const skuCount = 1 + Math.floor(random() * 5);
+    const items = Array.from({ length: skuCount }, (_, index) => {
+      const packaging = (scenario + index) % 4 === 0 ? "pallet" : "carton";
+      return {
+        ...item(
+          `S${scenario}-${index}`,
+          1_000 + Math.floor(random() * 180_000),
+          50 + Math.floor(random() * 950),
+          {
+            l: 250 + Math.floor(random() * 450),
+            w: 200 + Math.floor(random() * 350),
+            h: 180 + Math.floor(random() * 270),
+          },
+        ),
+        packaging,
+        ...(packaging === "pallet" ? { pallet: { l: 1000, w: 1200, h: 150 } } : {}),
+      };
+    });
+    const result = planMixedContainers(items, CONTAINER);
+    assertValidGeometry(result);
+    assert.ok(Number.isFinite(result.plannedBoxes));
+    assert.ok(Number.isFinite(result.plannedEa));
+    assert.ok(result.plannedBoxes <= result.totalRequiredBoxes);
+    assert.ok(result.plannedEa <= result.totalDemandEa);
+    if (!result.unplanned.length) {
+      assert.equal(result.plannedBoxes, result.totalRequiredBoxes);
+      assert.equal(result.plannedEa, result.totalDemandEa);
+      assert.equal(result.demandFulfillment, 100);
+    }
+  }
 });
