@@ -1,0 +1,26 @@
+{
+  "name": "集装箱装柜规划 · Container Planner",
+  "short_name": "装柜规划",
+  "description": "专业纸箱、托盘与多产品拼柜规划，数据在浏览器本地处理。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f3f6f8",
+  "theme_color": "#0a6ed1",
+  "orientation": "any",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

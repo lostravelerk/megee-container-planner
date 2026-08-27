@@ -8,6 +8,7 @@ import {
   packRectangles,
 } from "../lib/packing.js";
 import { readFirstXlsxSheet, type SpreadsheetCell } from "../lib/xlsx";
+import MixedPlanner from "./MixedPlanner";
 
 type Mode = "carton" | "pallet";
 type ViewMode = "top" | "side" | "front" | "pallet";
@@ -16,7 +17,28 @@ type Dimensions = { l: number; w: number; h: number };
 type Position = { x: number; y: number; w: number; h: number; rotated: boolean };
 type ProductInfo = { family: string; code: string; name: string; remarks: string };
 type ImportedProduct = Pick<ProductInfo, "family" | "code" | "name"> & { eaPerBox: number | null; carton: Dimensions | null };
-type WorkspaceView = "library" | "planner";
+type WorkspaceView = "library" | "planner" | "mixed";
+type InputMethod = "excel" | "manual";
+type SharedSinglePlan = {
+  product: ProductInfo;
+  mode: Mode;
+  carton: Dimensions;
+  pallet: Dimensions;
+  containerType: string;
+  eaPerBox: number | "";
+  palletMinHeight: number;
+  palletHeightLimit: number;
+  allowDoubleStack: boolean;
+  minimumPalletUtilization: number;
+  edgeInset: number;
+  cartonTolerance: number;
+  cartonGap: number;
+  palletTolerance: number;
+  palletGap: number;
+  doorClearance: number;
+  sideClearance: number;
+  topClearance: number;
+};
 
 type SavedPlan = {
   id: string;
@@ -51,7 +73,8 @@ type SavedPlan = {
 
 const PLAN_STORAGE_KEY = "megee-loadwise-plans-v1";
 const PRODUCT_STORAGE_KEY = "megee-container-products-v2";
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.3.0";
+const ALGORITHM_VERSION = "LW 2.3";
 
 const CONTAINERS: Record<string, Dimensions> = {
   "20GP": { l: 5898, w: 2352, h: 2393 },
@@ -65,7 +88,7 @@ const DEFAULTS = {
   container: CONTAINERS["40HQ"],
 };
 
-const STANDARD_IMPORT_HEADERS = ["家族", "产品代码", "品名", "EA/BOX", "外箱尺寸 L×W×H (mm)"] as const;
+const STANDARD_IMPORT_HEADERS = ["系列", "产品代码", "品名", "EA/BOX", "外箱尺寸 L×W×H (mm)"] as const;
 
 function cellText(value: SpreadsheetCell | undefined) {
   return String(value ?? "").trim();
@@ -96,7 +119,7 @@ function parseProductRows(rows: SpreadsheetCell[][]): ImportedProduct[] {
   if (rows.length < 2) throw new Error("Excel 至少需要一行表头和一行产品数据。");
   const headers = rows[0];
   const indexes = {
-    family: findHeaderIndex(headers, ["家族", "产品系列号", "产品家族", "产品家族/系列"]),
+    family: findHeaderIndex(headers, ["系列", "家族", "产品系列号", "产品家族", "产品家族/系列"]),
     code: findHeaderIndex(headers, ["产品代码", "SKU", "PRODUCT CODE"]),
     name: findHeaderIndex(headers, ["品名", "产品名称", "PRODUCT NAME"]),
     ea: findHeaderIndex(headers, ["EA/BOX", "装箱数量 EA/BOX", "装箱数量", "UNITS/CARTON"]),
@@ -111,7 +134,7 @@ function parseProductRows(rows: SpreadsheetCell[][]): ImportedProduct[] {
     const family = cellText(row[indexes.family]);
     const name = cellText(row[indexes.name]);
     if (!code && !family && !name) return [];
-    if (!code || !family || !name) throw new Error(`第 ${rowIndex + 2} 行缺少家族、产品代码或品名。`);
+    if (!code || !family || !name) throw new Error(`第 ${rowIndex + 2} 行缺少系列、产品代码或品名。`);
     if (seen.has(code)) throw new Error(`产品代码重复：${code}（第 ${rowIndex + 2} 行）`);
     seen.add(code);
     return [{ family, code, name, eaPerBox: parsePositiveNumber(row[indexes.ea]), carton: parseCartonSize(row[indexes.carton]) }];
@@ -122,6 +145,38 @@ function parseProductRows(rows: SpreadsheetCell[][]): ImportedProduct[] {
 
 const clampNumber = (value: number, minimum = 0) =>
   Number.isFinite(value) ? Math.max(minimum, value) : minimum;
+
+function encodeSharePayload(payload: unknown) {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function decodeSharePayload(value: string) {
+  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes)) as Partial<SharedSinglePlan>;
+}
+
+function safeSharedNumber(value: unknown, fallback: number, minimum = 0, maximum = 100000) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.min(maximum, Math.max(minimum, numeric)) : fallback;
+}
+
+function safeSharedText(value: unknown) {
+  return typeof value === "string" ? value.slice(0, 160) : "";
+}
+
+function safeSharedDimensions(value: unknown, fallback: Dimensions): Dimensions {
+  const source = value && typeof value === "object" ? value as Partial<Dimensions> : {};
+  return {
+    l: safeSharedNumber(source.l, fallback.l, 10),
+    w: safeSharedNumber(source.w, fallback.w, 10),
+    h: safeSharedNumber(source.h, fallback.h, 10),
+  };
+}
 
 function formatNumber(value: number, digits = 0) {
   return value.toLocaleString("zh-CN", {
@@ -306,7 +361,8 @@ function SideElevation({
   stackHeight,
   columnHeight,
   palletStackLevels,
-  palletPositions,
+  floorPositions,
+  doorClearance,
   language = "zh",
 }: {
   mode: Mode;
@@ -317,13 +373,18 @@ function SideElevation({
   stackHeight: number;
   columnHeight: number;
   palletStackLevels: number;
-  palletPositions: Position[];
+  floorPositions: Position[];
+  doorClearance: number;
   language?: ReportLanguage;
 }) {
   const isEnglish = language === "en";
-  const uniquePallets = palletPositions.filter(
+  const lengthBands = floorPositions.filter(
     (item, index, all) => all.findIndex((other) => Math.abs(other.x - item.x) < 1 && Math.abs(other.w - item.w) < 1) === index,
   );
+  const effectiveBoundary = Math.max(0, container.l - doorClearance);
+  const usedLength = lengthBands.reduce((maximum, item) => Math.max(maximum, item.x + item.w), 0);
+  const distanceToDoor = Math.max(0, container.l - usedLength);
+  const hasOverrun = usedLength > effectiveBoundary + 0.01;
   return (
     <div className="side-visual">
       <div className="dimension-axis top-axis"><span>{isEnglish ? "FRONT" : "箱头"}</span><b>{formatNumber(container.l)} mm</b><span>{isEnglish ? "DOOR" : "箱门"}</span></div>
@@ -331,18 +392,20 @@ function SideElevation({
         <div className="side-ratio" style={{ aspectRatio: `${container.l} / ${container.h}` }}>
           <div className="side-frame">
             {mode === "carton" ? (
-              Array.from({ length: Math.min(layers, 40) }).map((_, index) => (
+              Array.from({ length: Math.min(layers, 40) }).flatMap((_, layer) => lengthBands.map((band, bandIndex) => (
                 <div
-                  key={index}
-                  className={`side-layer ${index % 2 ? "even" : ""}`}
+                  key={`${layer}-${band.x}-${bandIndex}`}
+                  className={`side-layer ${band.rotated ? "rotated" : ""}`}
                   style={{
-                    bottom: `${(index * layerHeight / container.h) * 100}%`,
+                    left: `${(band.x / container.l) * 100}%`,
+                    width: `${(band.w / container.l) * 100}%`,
+                    bottom: `${(layer * layerHeight / container.h) * 100}%`,
                     height: `${(layerHeight / container.h) * 100}%`,
                   }}
-                ><span>{isEnglish ? `L${index + 1}` : `第 ${index + 1} 层`}</span></div>
-              ))
+                >{bandIndex === lengthBands.length - 1 && <span>{isEnglish ? `L${layer + 1}` : `第 ${layer + 1} 层`}</span>}</div>
+              )))
             ) : (
-              uniquePallets.map((item, index) => (
+              lengthBands.map((item, index) => (
                 <div
                   className="side-stack"
                   key={`${item.x}-${index}`}
@@ -368,10 +431,16 @@ function SideElevation({
                 </div>
               ))
             )}
+            <div className="side-clearance-zone" style={{ left: `${(effectiveBoundary / container.l) * 100}%` }} aria-label={isEnglish ? `${doorClearance} millimetres reserved at container door` : `箱门预留 ${doorClearance} 毫米`} />
           </div>
         </div>
       </div>
       <div className="dimension-axis width-axis">{isEnglish ? "H" : "高"} {formatNumber(container.h)} mm</div>
+      <div className={`clearance-audit ${hasOverrun ? "failed" : "passed"}`}>
+        <span>{isEnglish ? "Last package edge" : "最末包装边缘"}<b>{formatNumber(usedLength)} mm</b></span>
+        <span>{isEnglish ? "Effective loading boundary" : "有效装载边界"}<b>{formatNumber(effectiveBoundary)} mm</b></span>
+        <strong>{hasOverrun ? (isEnglish ? "OVER LIMIT" : "超出边界") : (isEnglish ? `✓ ${formatNumber(distanceToDoor)} mm to door (${formatNumber(doorClearance)} mm reserved)` : `✓ 距箱门 ${formatNumber(distanceToDoor)} mm（预留不少于 ${formatNumber(doorClearance)} mm）`)}</strong>
+      </div>
     </div>
   );
 }
@@ -594,7 +663,7 @@ function getSavedContainerTotals(plan: SavedPlan) {
       sideClearance: plan.sideClearance,
       topClearance: plan.topClearance,
       palletHeightLimit: plan.palletHeightLimit,
-      palletMinHeight: plan.palletMinHeight ?? 1500,
+      palletMinHeight: plan.palletMinHeight ?? 1200,
       allowDoubleStack: plan.allowDoubleStack ?? true,
       minimumPalletUtilization: plan.minimumPalletUtilization ?? 70,
     }).total,
@@ -630,7 +699,7 @@ function createAutomaticProductPlans(
             sideClearance: 30,
             topClearance: 50,
             palletHeightLimit: 1800,
-            palletMinHeight: 1500,
+            palletMinHeight: 1200,
             allowDoubleStack: true,
             minimumPalletUtilization: 70,
           };
@@ -658,7 +727,7 @@ function createAutomaticProductPlans(
       container: CONTAINERS["40HQ"],
       containerType: "40HQ",
       eaPerBox: product.eaPerBox ?? "",
-      palletMinHeight: 1500,
+      palletMinHeight: 1200,
       palletHeightLimit: 1800,
       allowDoubleStack: true,
       minimumPalletUtilization: 70,
@@ -690,6 +759,7 @@ function createAutomaticProductPlans(
 
 export default function LoadPlanner() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("library");
+  const [inputMethod, setInputMethod] = useState<InputMethod>("excel");
   const [mode, setMode] = useState<Mode>("carton");
   const [view, setView] = useState<ViewMode>("top");
   const [carton, setCarton] = useState<Dimensions>(DEFAULTS.carton);
@@ -706,7 +776,7 @@ export default function LoadPlanner() {
   const [sideClearance, setSideClearance] = useState(30);
   const [topClearance, setTopClearance] = useState(50);
   const [palletHeightLimit, setPalletHeightLimit] = useState(1800);
-  const [palletMinHeight, setPalletMinHeight] = useState(1500);
+  const [palletMinHeight, setPalletMinHeight] = useState(1200);
   const [allowDoubleStack, setAllowDoubleStack] = useState(true);
   const [minimumPalletUtilization, setMinimumPalletUtilization] = useState(70);
   const [eaPerBox, setEaPerBox] = useState<number | "">("");
@@ -735,25 +805,19 @@ export default function LoadPlanner() {
           const cached = JSON.parse(storedImportedProducts) as { products: ImportedProduct[]; importedAt?: string; syncedAt?: string };
           dataset = cached.products;
           importedAt = cached.importedAt || cached.syncedAt || new Date().toISOString();
-        } else {
-          const response = await fetch("/megee-products.json", { headers: { accept: "application/json" } });
-          if (!response.ok) throw new Error("内置产品数据读取失败");
-          const payload = await response.json() as ImportedProduct[] | { products?: ImportedProduct[]; exportedAt?: string };
-          dataset = Array.isArray(payload) ? payload : payload.products ?? [];
-          if (!dataset.length) throw new Error("内置产品数据为空");
-          if (!Array.isArray(payload) && payload.exportedAt) importedAt = payload.exportedAt;
-          else importedAt = new Date().toISOString();
         }
         if (!cancelled) {
           const nextPlans = createAutomaticProductPlans(dataset, storedPlans, importedAt);
           setProducts(dataset);
           setDataImportedAt(importedAt);
           setSavedPlans(nextPlans);
-          window.localStorage.setItem(PRODUCT_STORAGE_KEY, JSON.stringify({ products: dataset, importedAt }));
+          if (dataset.length) window.localStorage.setItem(PRODUCT_STORAGE_KEY, JSON.stringify({ products: dataset, importedAt }));
           window.localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(nextPlans));
           const params = new URLSearchParams(window.location.search);
+          if (params.get("view") === "mixed") setWorkspaceView("mixed");
           const requestedPlan = nextPlans.find((plan) => plan.product.code === params.get("product") && plan.sourceComplete !== false);
           if (requestedPlan) {
+            setInputMethod(requestedPlan.id.startsWith("product-") ? "excel" : "manual");
             setProductInfo(requestedPlan.product);
             setMode(requestedPlan.mode);
             setCarton(requestedPlan.carton);
@@ -766,6 +830,44 @@ export default function LoadPlanner() {
             setWorkspaceView("planner");
           }
           if (params.get("lang") === "en") setReportLanguage("en");
+          const sharedValue = window.location.hash.startsWith("#single=") ? window.location.hash.slice(8) : "";
+          if (sharedValue && sharedValue.length <= 16000) {
+            try {
+              const shared = decodeSharePayload(sharedValue);
+              const sharedContainerType = typeof shared.containerType === "string" && CONTAINERS[shared.containerType] ? shared.containerType : "40HQ";
+              const sharedProduct = shared.product && typeof shared.product === "object" ? shared.product : { family: "", code: "", name: "", remarks: "" };
+              setProductInfo({
+                family: safeSharedText(sharedProduct.family),
+                code: safeSharedText(sharedProduct.code),
+                name: safeSharedText(sharedProduct.name),
+                remarks: safeSharedText(sharedProduct.remarks),
+              });
+              setMode(shared.mode === "pallet" ? "pallet" : "carton");
+              setCarton(safeSharedDimensions(shared.carton, DEFAULTS.carton));
+              setPallet(safeSharedDimensions(shared.pallet, DEFAULTS.pallet));
+              setContainerType(sharedContainerType);
+              setContainer(CONTAINERS[sharedContainerType]);
+              setEaPerBox(shared.eaPerBox === "" ? "" : safeSharedNumber(shared.eaPerBox, 1, 1, 10_000_000));
+              setPalletMinHeight(safeSharedNumber(shared.palletMinHeight, 1200, 100, 5000));
+              setPalletHeightLimit(safeSharedNumber(shared.palletHeightLimit, 1800, 100, 5000));
+              setAllowDoubleStack(shared.allowDoubleStack !== false);
+              setMinimumPalletUtilization(safeSharedNumber(shared.minimumPalletUtilization, 70, 0, 100));
+              setEdgeInset(safeSharedNumber(shared.edgeInset, 10, 0, 1000));
+              setCartonTolerance(safeSharedNumber(shared.cartonTolerance, 3, 0, 1000));
+              setCartonGap(safeSharedNumber(shared.cartonGap, 5, 0, 1000));
+              setPalletTolerance(safeSharedNumber(shared.palletTolerance, 10, 0, 1000));
+              setPalletGap(safeSharedNumber(shared.palletGap, 20, 0, 1000));
+              setDoorClearance(safeSharedNumber(shared.doorClearance, 80, 0, 5000));
+              setSideClearance(safeSharedNumber(shared.sideClearance, 30, 0, 2000));
+              setTopClearance(safeSharedNumber(shared.topClearance, 50, 0, 2000));
+              setInputMethod("manual");
+              setActivePlanVersion(null);
+              setActivePlanStatus("待复核");
+              setWorkspaceView("planner");
+            } catch {
+              setSaveNotice(params.get("lang") === "en" ? "The shared plan link is invalid." : "分享方案链接无效，请重新生成。");
+            }
+          }
         }
       } catch {
         if (!cancelled) setSaveNotice("产品数据初始化失败，请导入标准 Excel 模板重试。");
@@ -829,11 +931,20 @@ export default function LoadPlanner() {
     setContainerType("40HQ");
     setEdgeInset(10);
     setPalletHeightLimit(1800);
-    setPalletMinHeight(1500);
+    setPalletMinHeight(1200);
     setAllowDoubleStack(true);
     setMinimumPalletUtilization(70);
     setEaPerBox("");
     applyProfile("标准");
+  };
+
+  const startManualPlan = () => {
+    resetAll();
+    setInputMethod("manual");
+    setWorkspaceView("planner");
+    setActivePlanVersion(null);
+    setActivePlanStatus("待复核");
+    setSaveNotice("");
   };
 
   const switchMode = (nextMode: Mode) => {
@@ -872,6 +983,10 @@ export default function LoadPlanner() {
   }, [librarySearch, savedPlans]);
 
   const saveCurrentPlan = () => {
+    if (!productInfo.family.trim() || !productInfo.code.trim() || !productInfo.name.trim() || eaPerBox === "") {
+      setSaveNotice(tr("保存前请完整填写系列、产品代码、品名和 EA/BOX。", "Complete series, product code, product name and EA/BOX before saving."));
+      return;
+    }
     const sameProductPlans = savedPlans.filter((plan) =>
       plan.product.code && plan.product.code === productInfo.code,
     );
@@ -912,6 +1027,45 @@ export default function LoadPlanner() {
     setActivePlanStatus(nextPlan.status);
   };
 
+  const buildSingleShareUrl = () => {
+    const payload: SharedSinglePlan = {
+      product: productInfo,
+      mode,
+      carton,
+      pallet,
+      containerType,
+      eaPerBox,
+      palletMinHeight,
+      palletHeightLimit,
+      allowDoubleStack,
+      minimumPalletUtilization,
+      edgeInset,
+      cartonTolerance,
+      cartonGap,
+      palletTolerance,
+      palletGap,
+      doorClearance,
+      sideClearance,
+      topClearance,
+    };
+    return `${window.location.origin}${window.location.pathname}?view=planner&lang=${reportLanguage}#single=${encodeSharePayload(payload)}`;
+  };
+
+  const copySingleShareLink = async () => {
+    try {
+      await navigator.clipboard.writeText(buildSingleShareUrl());
+      setSaveNotice(tr("已复制仅包含当前单品方案的分享链接。", "A share link containing only this single-product plan has been copied."));
+    } catch {
+      setSaveNotice(tr("浏览器未允许复制，请从地址栏复制链接。", "Copy permission was denied. Copy the URL from the address bar."));
+    }
+  };
+
+  const emailSingleShare = () => {
+    const subject = tr(`装柜方案 ${productInfo.code || reportNumber}`, `Container Loading Plan ${productInfo.code || reportNumber}`);
+    const body = tr(`请通过以下链接查看装柜方案，可在浏览器打印或另存为 PDF：\n${buildSingleShareUrl()}`, `View the loading plan at the link below. It can be printed or saved as PDF:\n${buildSingleShareUrl()}`);
+    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  };
+
   const applyProductDataset = (dataset: ImportedProduct[], importedAt = new Date().toISOString()) => {
     const nextPlans = createAutomaticProductPlans(dataset, savedPlans, importedAt);
     setProducts(dataset);
@@ -947,7 +1101,23 @@ export default function LoadPlanner() {
     window.localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(nextPlans));
   };
 
+  const clearLocalLibrary = () => {
+    const confirmed = window.confirm(tr(
+      "确定清空当前浏览器中的产品数据与方案版本吗？此操作不会影响原始 Excel 文件。",
+      "Clear all product data and plan versions from this browser? Your original Excel files are not affected.",
+    ));
+    if (!confirmed) return;
+    window.localStorage.removeItem(PRODUCT_STORAGE_KEY);
+    window.localStorage.removeItem(PLAN_STORAGE_KEY);
+    setProducts([]);
+    setSavedPlans([]);
+    setDataImportedAt("");
+    setLibrarySearch("");
+    setSaveNotice(tr("本机方案库已清空。", "The local plan library has been cleared."));
+  };
+
   const selectImportedProduct = (code: string) => {
+    setInputMethod("excel");
     const selected = products.find((item) => item.code === code);
     if (!selected) {
       setProductInfo({ family: "", code: "", name: "", remarks: productInfo.remarks });
@@ -960,6 +1130,7 @@ export default function LoadPlanner() {
   };
 
   const openSavedPlan = (plan: SavedPlan, printAfterOpen = false) => {
+    setInputMethod(plan.id.startsWith("product-") ? "excel" : "manual");
     setProductInfo(plan.product);
     setMode(plan.mode);
     setCarton(plan.carton);
@@ -967,7 +1138,7 @@ export default function LoadPlanner() {
     setContainer(plan.container);
     setContainerType(plan.containerType);
     setEaPerBox(plan.eaPerBox);
-    setPalletMinHeight(plan.palletMinHeight ?? 1500);
+    setPalletMinHeight(plan.palletMinHeight ?? 1200);
     setPalletHeightLimit(plan.palletHeightLimit);
     setAllowDoubleStack(plan.allowDoubleStack ?? true);
     setMinimumPalletUtilization(plan.minimumPalletUtilization ?? 70);
@@ -1007,6 +1178,7 @@ export default function LoadPlanner() {
         <nav className="main-nav" aria-label={tr("主工作区", "Primary workspace")}>
           <button className={workspaceView === "library" ? "active" : ""} onClick={() => setWorkspaceView("library")}>{tr("产品方案库", "Plan Library")}</button>
           <button className={workspaceView === "planner" ? "active" : ""} onClick={() => setWorkspaceView("planner")}>{tr("装柜规划器", "Planner")}</button>
+          <button className={workspaceView === "mixed" ? "active" : ""} onClick={() => setWorkspaceView("mixed")}>{tr("多产品拼柜", "Mixed Load")}</button>
         </nav>
         <div className="header-actions">
           <div className="language-switch" aria-label="Language">
@@ -1034,13 +1206,13 @@ export default function LoadPlanner() {
             <div className="library-actions">
               <a className="template-link" href="/产品装柜规划导入模板.xlsx" download>{tr("下载模板", "Download template")}</a>
               <button className="sync-button" disabled={importWorking} onClick={() => importInputRef.current?.click()}>{importWorking ? tr("正在导入并规划…", "Importing and planning…") : tr("导入 Excel 并自动规划", "Import Excel & Plan")} <span>↑</span></button>
-              <button className="new-plan-button" onClick={() => setWorkspaceView("planner")}>{tr("新建单项方案", "New Plan")} <span>＋</span></button>
+              <button className="new-plan-button" onClick={startManualPlan}>{tr("手工新建单项", "Manual Single Plan")} <span>＋</span></button>
             </div>
           </div>
 
           <div className="library-toolbar">
-            <label className="library-search"><span>⌕</span><input value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder={tr("搜索家族、产品代码、品名或备注", "Search family, product code, name or remarks")} /></label>
-            <div className="library-sync-state"><i /> {products.length ? tr(`已载入 ${products.length} 款产品`, `${products.length} products loaded`) : tr("等待 Excel 数据", "Awaiting Excel data")} <b>{tr("导入时间", "Imported")}: {dataImportedAt ? new Intl.DateTimeFormat(reportIsEnglish ? "en-GB" : "zh-CN", { dateStyle: "short", timeStyle: "short" }).format(new Date(dataImportedAt)) : "—"}</b></div>
+            <label className="library-search"><span>⌕</span><input value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)} placeholder={tr("搜索系列、产品代码、品名或备注", "Search series, product code, name or remarks")} /></label>
+            <div className="library-sync-state"><i /> {products.length ? tr(`已载入 ${products.length} 款产品`, `${products.length} products loaded`) : tr("等待 Excel 数据", "Awaiting Excel data")} <b>{tr("导入时间", "Imported")}: {dataImportedAt ? new Intl.DateTimeFormat(reportIsEnglish ? "en-GB" : "zh-CN", { dateStyle: "short", timeStyle: "short" }).format(new Date(dataImportedAt)) : "—"}</b>{(products.length > 0 || savedPlans.length > 0) && <button className="library-clear-button" onClick={clearLocalLibrary}>{tr("清空本机库", "Clear local library")}</button>}</div>
           </div>
 
           <div className="library-stats">
@@ -1055,19 +1227,19 @@ export default function LoadPlanner() {
           {visiblePlans.length > 0 ? (
             <div className="product-plan-table-wrap panel">
               <table className="product-plan-table">
-                <thead><tr><th>{tr("家族", "FAMILY")}</th><th>{tr("产品代码", "PRODUCT CODE")}</th><th>{tr("品名", "PRODUCT NAME")}</th><th>EA/BOX</th><th>{tr("外箱尺寸", "OUTER CARTON")}</th><th>20GP</th><th>40GP</th><th>40HQ</th><th>{tr("备注", "REMARKS")}</th><th>{tr("明细报告", "DETAIL / REPORT")}</th></tr></thead>
+                <thead><tr><th>{tr("系列", "SERIES")}</th><th>{tr("产品代码", "PRODUCT CODE")}</th><th>{tr("品名", "PRODUCT NAME")}</th><th>EA/BOX</th><th>{tr("外箱尺寸", "OUTER CARTON")}</th><th>20GP<br /><small>BOX / EA</small></th><th>40GP<br /><small>BOX / EA</small></th><th>40HQ<br /><small>BOX / EA</small></th><th>{tr("备注", "REMARKS")}</th><th>{tr("明细报告", "DETAIL / REPORT")}</th></tr></thead>
                 <tbody>{visiblePlans.map((plan) => {
                   const totals = getSavedContainerTotals(plan);
                   return (
                     <tr key={plan.id}>
-                      <td data-label={tr("家族", "Family")}><b>{plan.product.family || "—"}</b></td>
+                      <td data-label={tr("系列", "Series")}><b>{plan.product.family || "—"}</b></td>
                       <td data-label={tr("产品代码", "Product code")}><code>{plan.product.code || "—"}</code></td>
                       <td data-label={tr("品名", "Product name")}>{plan.product.name || "—"}</td>
                       <td data-label="EA/BOX">{plan.eaPerBox === "" ? "—" : formatNumber(plan.eaPerBox)}</td>
                       <td data-label={tr("外箱尺寸", "Outer carton")}><span className={plan.sourceComplete === false ? "missing-source" : ""}>{plan.sourceComplete === false ? tr("待补充", "Required") : `${formatNumber(plan.carton.l)} × ${formatNumber(plan.carton.w)} × ${formatNumber(plan.carton.h)} mm`}</span></td>
-                      <td data-label="20GP"><strong>{formatNumber(totals["20GP"])}</strong><small> BOX</small></td>
-                      <td data-label="40GP"><strong>{formatNumber(totals["40GP"])}</strong><small> BOX</small></td>
-                      <td data-label="40HQ"><strong>{formatNumber(totals["40HQ"])}</strong><small> BOX</small></td>
+                      <td data-label="20GP" className="container-quantity"><strong>{formatNumber(totals["20GP"])} <small>BOX</small></strong><span>{plan.eaPerBox === "" ? tr("EA 待填写", "EA required") : `${formatNumber(totals["20GP"] * plan.eaPerBox)} EA`}</span></td>
+                      <td data-label="40GP" className="container-quantity"><strong>{formatNumber(totals["40GP"])} <small>BOX</small></strong><span>{plan.eaPerBox === "" ? tr("EA 待填写", "EA required") : `${formatNumber(totals["40GP"] * plan.eaPerBox)} EA`}</span></td>
+                      <td data-label="40HQ" className="container-quantity"><strong>{formatNumber(totals["40HQ"])} <small>BOX</small></strong><span>{plan.eaPerBox === "" ? tr("EA 待填写", "EA required") : `${formatNumber(totals["40HQ"] * plan.eaPerBox)} EA`}</span></td>
                       <td data-label={tr("备注", "Remarks")} className="remarks-cell"><input aria-label={`${plan.product.code} ${tr("备注", "remarks")}`} value={plan.product.remarks} placeholder={tr("人工填写", "Manual entry")} onChange={(event) => updatePlanRemarks(plan.id, event.target.value)} /></td>
                       <td data-label={tr("明细报告", "Detail / report")}><div className="row-actions"><button disabled={plan.sourceComplete === false} onClick={() => openSavedPlan(plan)}>{tr("查看明细", "Details")}</button><button disabled={plan.sourceComplete === false} className="report-link" onClick={() => openSavedPlan(plan, true)}>{tr("报告", "Report")} ↗</button></div></td>
                     </tr>
@@ -1087,6 +1259,8 @@ export default function LoadPlanner() {
         </section>
       )}
 
+      {workspaceView === "mixed" && <MixedPlanner language={reportLanguage} products={products} containers={CONTAINERS} appVersion={APP_VERSION} />}
+
       {workspaceView === "planner" && <><section className="mode-section" aria-labelledby="package-unit-label">
         <p className="mode-label" id="package-unit-label">{tr("最大包装单元", "MAXIMUM PACKAGING UNIT")}</p>
         <div className="mode-switcher" aria-label={tr("最大包装单元选择", "Maximum packaging unit")}>
@@ -1096,6 +1270,11 @@ export default function LoadPlanner() {
         <button className={mode === "pallet" ? "active" : ""} onClick={() => switchMode("pallet")}>
           <b>02</b><span><strong>{tr("托盘", "Pallet")}</strong><small>{tr("托盘承载纸箱装入集装箱", "Cartons loaded on pallets")}</small></span>
         </button>
+        </div>
+        <div className="planner-share-actions">
+          <button onClick={() => void copySingleShareLink()}>{tr("复制方案链接", "Copy plan link")}</button>
+          <button onClick={emailSingleShare}>{tr("邮件分享", "Email")}</button>
+          <button className="primary" onClick={() => window.print()}>{tr("打印 / PDF", "Print / PDF")} ↗</button>
         </div>
       </section>
 
@@ -1109,21 +1288,25 @@ export default function LoadPlanner() {
           <div className="field-group product-group">
             <div className="product-heading">
               <h3><i>SKU</i> {tr("产品信息", "Product Information")}</h3>
-              <button type="button" className="inline-sync-button" disabled={importWorking} onClick={() => importInputRef.current?.click()}>{importWorking ? tr("导入中…", "Importing…") : tr("导入 Excel", "Import Excel")}</button>
+              {inputMethod === "excel" && <button type="button" className="inline-sync-button" disabled={importWorking} onClick={() => importInputRef.current?.click()}>{importWorking ? tr("导入中…", "Importing…") : tr("导入 Excel", "Import Excel")}</button>}
             </div>
-            <label className="cost-product-select">{tr("选择产品", "Select product")}
+            <div className="input-method-switch" role="group" aria-label={tr("产品输入方式", "Product input method")}>
+              <button type="button" className={inputMethod === "excel" ? "active" : ""} onClick={() => setInputMethod("excel")}><b>1</b><span>{tr("Excel 批量", "Excel batch")}</span></button>
+              <button type="button" className={inputMethod === "manual" ? "active" : ""} onClick={() => setInputMethod("manual")}><b>2</b><span>{tr("手工单笔", "Manual single")}</span></button>
+            </div>
+            {inputMethod === "excel" && <label className="cost-product-select">{tr("选择已导入产品", "Select imported product")}
               <select value={productInfo.code} onChange={(event) => selectImportedProduct(event.target.value)}>
                 <option value="">{products.length ? tr(`请选择（共 ${products.length} 款）`, `Select from ${products.length} products`) : tr("请先导入标准 Excel", "Import the standard Excel file first")}</option>
                 {products.map((item) => <option key={item.code} value={item.code}>{item.family} · {item.code} · {item.name}</option>)}
               </select>
-            </label>
+            </label>}
             <div className="product-fields">
-              <label>{tr("家族", "Family")}<input value={productInfo.family} placeholder={tr("来自 Excel", "From Excel")} readOnly /></label>
-              <label>{tr("产品代码", "Product code")}<input value={productInfo.code} placeholder={tr("来自 Excel", "From Excel")} readOnly /></label>
-              <label>{tr("品名", "Product name")}<input value={productInfo.name} placeholder={tr("来自 Excel", "From Excel")} readOnly /></label>
+              <label>{tr("系列", "Series")}<input value={productInfo.family} placeholder={inputMethod === "excel" ? tr("来自 Excel", "From Excel") : tr("请输入系列", "Enter series")} readOnly={inputMethod === "excel"} onChange={(event) => setProductInfo({ ...productInfo, family: event.target.value })} /></label>
+              <label>{tr("产品代码", "Product code")}<input value={productInfo.code} placeholder={inputMethod === "excel" ? tr("来自 Excel", "From Excel") : tr("请输入代码", "Enter code")} readOnly={inputMethod === "excel"} onChange={(event) => setProductInfo({ ...productInfo, code: event.target.value })} /></label>
+              <label>{tr("品名", "Product name")}<input value={productInfo.name} placeholder={inputMethod === "excel" ? tr("来自 Excel", "From Excel") : tr("请输入品名", "Enter product name")} readOnly={inputMethod === "excel"} onChange={(event) => setProductInfo({ ...productInfo, name: event.target.value })} /></label>
               <label>{tr("报告备注", "Report remarks")}<input value={productInfo.remarks} placeholder={tr("人工填写，仅保存在本浏览器", "Manual entry, stored in this browser")} onChange={(event) => setProductInfo({ ...productInfo, remarks: event.target.value })} /></label>
             </div>
-            <div className="sync-status"><span /> {tr("本地数据", "Local data")} <b>{products.length ? tr(`${products.length} 款 · 不上传服务器`, `${products.length} products · never uploaded`) : tr("等待 Excel", "Awaiting Excel")}</b></div>
+            <div className="sync-status"><span /> {inputMethod === "excel" ? tr("Excel 批量模式", "Excel batch mode") : tr("手工单笔模式", "Manual single mode")} <b>{inputMethod === "excel" ? (products.length ? tr(`${products.length} 款 · 本机方案库`, `${products.length} products · local library`) : tr("等待 Excel", "Awaiting Excel")) : tr("填写后即时计算，可保存到方案库", "Live calculation; save to plan library")}</b></div>
           </div>
 
           <div className="field-group">
@@ -1166,7 +1349,7 @@ export default function LoadPlanner() {
               <div className="field-row two-column compact-fields">
                 <NumberInput label={tr("托盘最低柜容利用率 %", "Minimum pallet envelope use %")} value={minimumPalletUtilization} min={0} onChange={(value) => setMinimumPalletUtilization(Math.min(100, value))} />
               </div>
-              <p className="rule-note">{tr("默认总高 1500–1800 mm，可按客户电梯、门洞及搬运通道要求修改；低于柜容利用率门槛时，自动规划推荐纸箱直装。", "Default total height: 1,500–1,800 mm. Adjust to customer handling constraints; below the utilization threshold, direct cartons are recommended.")}</p>
+              <p className="rule-note">{tr("默认总高 1200–1800 mm，默认允许平底托盘双层；可按客户电梯、门洞及搬运通道要求修改。", "Default total height: 1,200–1,800 mm with double-stacked flat-bottom pallets enabled. Adjust to customer handling constraints.")}</p>
             </div>
           )}
 
@@ -1183,7 +1366,7 @@ export default function LoadPlanner() {
             >
               <option value="20GP">20GP {tr("标准柜", "Standard")}</option>
               <option value="40GP">40GP {tr("标准柜", "Standard")}</option>
-              <option value="40HQ">40HQ / 40HC {tr("高柜", "High Cube")}</option>
+              <option value="40HQ">40HQ {tr("高柜", "High Cube")}</option>
               <option value="自定义">{tr("自定义尺寸", "Custom dimensions")}</option>
             </select>
             <div className="field-row compact-fields">
@@ -1239,7 +1422,7 @@ export default function LoadPlanner() {
                   className={containerType === type ? "active" : ""}
                   onClick={() => { setContainerType(type); setContainer(dimensions); }}
                 >
-                  <span>{type === "40HQ" ? "40HQ / 40HC" : type}</span>
+                  <span>{type}</span>
                   <strong>{formatNumber(plan.total)} <small>{tr("箱", "BOX")}</small></strong>
                   <em>{mode === "pallet" ? tr(`${plan.totalPallets} 托盘 · ${plan.palletStackLevels === 2 ? "双层" : "单层"}`, `${plan.totalPallets} pallets · ${plan.palletStackLevels === 2 ? "double" : "single"}`) : tr(`${plan.directPlan.count} 箱/层`, `${plan.directPlan.count} cartons/layer`)}</em>
                   <b>{eaPerBox === "" ? tr("EA/BOX 待填写", "EA/BOX required") : `${formatNumber(plan.total * eaPerBox)} EA`}</b>
@@ -1289,7 +1472,8 @@ export default function LoadPlanner() {
                 stackHeight={result.stackHeight}
                 columnHeight={result.columnHeight}
                 palletStackLevels={result.palletStackLevels}
-                palletPositions={result.palletPlan.positions}
+                floorPositions={mode === "carton" ? result.directPlan.positions : result.palletPlan.positions}
+                doorClearance={doorClearance}
                 language={reportLanguage}
               />
             )}
@@ -1374,7 +1558,7 @@ export default function LoadPlanner() {
                 <li>{tr("使用“标称尺寸 + 尺寸余量”，相邻纸箱之间保留设定的水平间隙。", "Calculation uses nominal dimensions plus tolerance, with the specified horizontal gap between cartons.")}</li>
                 <li>{tr("纸箱不得重叠或越界；托盘纸箱不得超过退边后的有效承载面。", "Cartons may not overlap or cross boundaries; pallet cartons must remain within the inset load surface.")}</li>
                 {mode === "pallet" && <li>{tr("平底托盘允许上下双层；算法同时比较单层高托与双层矮托，先最大化全柜纸箱总数，数量相同优先少用托盘。", "Flat-bottom pallets may be double-stacked. The algorithm compares tall single stacks with shorter double stacks, maximizing cartons and then minimizing pallets.")}</li>}
-                {mode === "pallet" && <li>{tr("默认客户高度范围为 1500–1800 mm，可按项目修改；双层只有在每托都满足客户最低高度且总叠高不超有效柜高时才参与择优。", "Default customer height range is 1,500–1,800 mm. Double stacks qualify only when each pallet meets the minimum and the total fits the effective height.")}</li>}
+                {mode === "pallet" && <li>{tr("默认客户高度范围为 1200–1800 mm，并默认允许双层；双层只有在每托都满足客户最低高度且总叠高不超有效柜高时才参与择优。", "Default customer height range is 1,200–1,800 mm with double stacking enabled. Double stacks qualify only when each pallet meets the minimum and the total fits the effective height.")}</li>}
                 <li>{tr("层数按有效净高向下取整。最终仍需复核载重、重心、抗压及门框角柱。", "Layers are rounded down by effective clear height. Verify payload, center of gravity, compression strength and door-frame constraints.")}</li>
               </ul>
             </article>
@@ -1404,21 +1588,21 @@ export default function LoadPlanner() {
         <b>Container Planner v{APP_VERSION}</b>
       </footer>
 
-      <section className="print-report" lang={reportLanguage === "en" ? "en" : "zh-CN"}>
+      {workspaceView !== "mixed" && <section className="print-report" lang={reportLanguage === "en" ? "en" : "zh-CN"}>
         <header className="report-header">
           <div><p>{reportIsEnglish ? "ZHEJIANG MEGEE INDUSTRY CO., LTD. · MEGEE" : "浙江美集实业有限公司 · MEGEE"}</p><h1>{reportIsEnglish ? "CONTAINER LOADING PLAN" : "集装箱装柜方案报告"}</h1><span>{reportIsEnglish ? "Operator-ready loading instruction" : "现场装柜操作指引"}</span></div>
           <dl>
             <div><dt>{reportIsEnglish ? "Report No." : "报告编号"}</dt><dd>{reportNumber}</dd></div>
             <div><dt>{reportIsEnglish ? "Generated" : "生成日期"}</dt><dd>{reportDate}</dd></div>
             <div><dt>{reportIsEnglish ? "Plan Version" : "方案版本"}</dt><dd>{activePlanVersion ? `V${activePlanVersion}` : (reportIsEnglish ? "UNSAVED DRAFT" : "未保存草案")}</dd></div>
-            <div><dt>{reportIsEnglish ? "Software / Algorithm" : "软件 / 算法版本"}</dt><dd>v{APP_VERSION} / LW 2.2</dd></div>
+            <div><dt>{reportIsEnglish ? "Software / Algorithm" : "软件 / 算法版本"}</dt><dd>v{APP_VERSION} / {ALGORITHM_VERSION}</dd></div>
             <div><dt>{reportIsEnglish ? "Product Data Imported" : "产品数据导入时间"}</dt><dd>{dataImportedAt ? new Intl.DateTimeFormat(reportIsEnglish ? "en-GB" : "zh-CN", { dateStyle: "short", timeStyle: "short" }).format(new Date(dataImportedAt)) : (reportIsEnglish ? "NOT IMPORTED / MANUAL" : "未导入 / 手工输入")}</dd></div>
             <div><dt>{reportIsEnglish ? "Status" : "方案状态"}</dt><dd>{mode === "pallet" && !result.palletPlanQualified ? (reportIsEnglish ? "PALLET PLAN NOT APPROVED" : "托盘未达门槛 · 不推荐执行") : (reportIsEnglish ? `${activePlanStatus === "已复核" ? "REVIEWED" : "PENDING REVIEW"} · RULE-OPTIMAL` : `${activePlanStatus} · 规则内最优`)}</dd></div>
           </dl>
         </header>
 
         <section className="report-product-block">
-          <div><span>{reportIsEnglish ? "FAMILY" : "家族"}</span><b>{productInfo.family || (reportIsEnglish ? "NOT ENTERED" : "未填写")}</b></div>
+          <div><span>{reportIsEnglish ? "SERIES" : "系列"}</span><b>{productInfo.family || (reportIsEnglish ? "NOT ENTERED" : "未填写")}</b></div>
           <div><span>{reportIsEnglish ? "PRODUCT CODE" : "产品代码"}</span><b>{productInfo.code || (reportIsEnglish ? "NOT ENTERED" : "未填写")}</b></div>
           <div><span>{reportIsEnglish ? "PRODUCT NAME" : "品名"}</span><b>{productInfo.name || (reportIsEnglish ? "NOT ENTERED" : "未填写")}</b></div>
           <div><span>{reportIsEnglish ? "REPORT REMARKS" : "备注"}</span><b>{productInfo.remarks || "—"}</b></div>
@@ -1426,7 +1610,7 @@ export default function LoadPlanner() {
 
         <div className="report-summary-grid">
           <div><span>{reportIsEnglish ? "MAX. PACKAGING UNIT" : "最大包装单元"}</span><b>{mode === "carton" ? (reportIsEnglish ? "CARTON" : "纸箱") : (reportIsEnglish ? "PALLET" : "托盘")}</b></div>
-          <div><span>{reportIsEnglish ? "CONTAINER" : "选用柜型"}</span><b>{containerType === "40HQ" ? "40HQ / 40HC" : containerType}</b></div>
+          <div><span>{reportIsEnglish ? "CONTAINER" : "选用柜型"}</span><b>{containerType}</b></div>
           <div><span>{reportIsEnglish ? "TOTAL CARTONS" : "纸箱总数"}</span><b>{formatNumber(result.total)} BOX</b></div>
           <div><span>{reportIsEnglish ? "TOTAL UNITS" : "成品总数"}</span><b>{totalEa === null ? (reportIsEnglish ? "EA/BOX REQUIRED" : "EA/BOX 待填写") : `${formatNumber(totalEa)} EA`}</b></div>
           <div><span>{reportIsEnglish ? "TOTAL PACKING VOLUME" : "包装总材积"}</span><b>{formatNumber(result.chargeableVolumeCbm, 2)} CBM</b></div>
@@ -1454,12 +1638,12 @@ export default function LoadPlanner() {
           </tbody></table>}
         </section>
 
-        <section className="report-section">
+        <section className="report-section report-comparison-section">
           <h2><span>02</span> {reportIsEnglish ? "STANDARD CONTAINER COMPARISON" : "常用国际柜型方案对比"}</h2>
           <table><thead><tr><th>{reportIsEnglish ? "Container" : "柜型"}</th><th>{reportIsEnglish ? "Reference Internal Size (mm)" : "参考内尺寸 (mm)"}</th><th>{reportIsEnglish ? "Total Cartons" : "纸箱总数"}</th><th>{reportIsEnglish ? "Total EA" : "总 EA"}</th><th>{mode === "pallet" ? (reportIsEnglish ? "Pallets" : "托盘数") : (reportIsEnglish ? "Cartons / Layer" : "每层纸箱")}</th><th>{reportIsEnglish ? "Total CBM" : "总材积 CBM"}</th><th>{reportIsEnglish ? "Volume Use" : "体积利用率"}</th></tr></thead>
             <tbody>{standardComparisons.map(({ type, dimensions, plan }) => (
               <tr key={type} className={containerType === type ? "selected-row" : ""}>
-                <td>{type === "40HQ" ? "40HQ / 40HC" : type}</td>
+                <td>{type}</td>
                 <td>{dimensions.l} × {dimensions.w} × {dimensions.h}</td>
                 <td>{formatNumber(plan.total)}</td>
                 <td>{eaPerBox === "" ? "—" : formatNumber(plan.total * eaPerBox)}</td>
@@ -1471,7 +1655,7 @@ export default function LoadPlanner() {
           </table>
         </section>
 
-        <section className="report-section report-page-break">
+        <section className="report-section">
           <h2><span>03</span> {reportIsEnglish ? "OPTIMAL LOADING PLAN & SECTION VIEWS" : "最优装载方案与剖面图"}</h2>
           <div className="report-result-line">
             <b>{formatNumber(result.total)} BOX</b><span>{totalEa === null ? (reportIsEnglish ? "EA/BOX REQUIRED" : "EA/BOX 未填写") : `${formatNumber(totalEa)} EA`}</span>
@@ -1481,19 +1665,19 @@ export default function LoadPlanner() {
           {mode === "pallet" && !result.palletPlanQualified && <div className="report-stop-notice"><b>{reportIsEnglish ? "DO NOT EXECUTE PALLET PLAN" : "停止执行托盘方案"}</b><span>{reportIsEnglish ? "Pallet envelope utilization or the customer height requirement has failed. This page is for analysis only. Recalculate and issue a carton-direct report." : "托盘外廓利用率或客户高度要求未通过。该页仅供分析，应改用纸箱直装方案后重新生成正式报告。"}</span></div>}
           <ReportOperationSteps mode={mode} carton={carton} result={result} cartonGap={cartonGap} palletGap={palletGap} language={reportLanguage} />
           <div className="report-view"><h3>{reportIsEnglish ? "HORIZONTAL SECTION · TOP VIEW" : "水平剖面 · 俯视"} <span>{mode === "carton" ? (reportIsEnglish ? `${result.directPlan.count} cartons per layer` : `每层 ${result.directPlan.count} 箱`) : (reportIsEnglish ? `${result.palletPlan.count} pallet positions on floor` : `柜底 ${result.palletPlan.count} 托位`)} · {reportIsEnglish ? "load by number from front to door" : "按编号从箱头装至箱门"}</span></h3><PlanCanvas title={reportIsEnglish ? "Report top view" : "报告俯视图"} dimensions={container} positions={mode === "carton" ? result.directPlan.positions : result.palletPlan.positions} offsetY={sideClearance} variant={mode} language={reportLanguage} /></div>
-          <div className="report-view"><h3>{reportIsEnglish ? "LONGITUDINAL SECTION · SIDE VIEW" : "纵向剖面 · 侧视"} <span>{mode === "carton" ? (reportIsEnglish ? `${result.directLayers} carton layers` : `${result.directLayers} 层纸箱`) : (reportIsEnglish ? `${result.palletStackLevels} pallet level(s) · total stack ${formatNumber(result.columnHeight)} mm` : `${result.palletStackLevels} 层托盘 · 总叠高 ${formatNumber(result.columnHeight)} mm`)}</span></h3><SideElevation mode={mode} container={container} layers={result.layers} layerHeight={result.effectiveCarton.h} palletHeight={pallet.h} stackHeight={result.stackHeight} columnHeight={result.columnHeight} palletStackLevels={result.palletStackLevels} palletPositions={result.palletPlan.positions} language={reportLanguage} /></div>
+          <div className="report-view report-visual-break"><h3>{reportIsEnglish ? "LONGITUDINAL SECTION · SIDE VIEW" : "纵向剖面 · 侧视"} <span>{mode === "carton" ? (reportIsEnglish ? `${result.directLayers} carton layers` : `${result.directLayers} 层纸箱`) : (reportIsEnglish ? `${result.palletStackLevels} pallet level(s) · total stack ${formatNumber(result.columnHeight)} mm` : `${result.palletStackLevels} 层托盘 · 总叠高 ${formatNumber(result.columnHeight)} mm`)}</span></h3><SideElevation mode={mode} container={container} layers={result.layers} layerHeight={result.effectiveCarton.h} palletHeight={pallet.h} stackHeight={result.stackHeight} columnHeight={result.columnHeight} palletStackLevels={result.palletStackLevels} floorPositions={mode === "carton" ? result.directPlan.positions : result.palletPlan.positions} doorClearance={doorClearance} language={reportLanguage} /></div>
           <div className="report-view compact-report-view"><h3>{reportIsEnglish ? "TRANSVERSE SECTION · DOOR-END VIEW" : "横向剖面 · 箱门端视"} <span>{reportIsEnglish ? "verify width pattern and top clearance" : "核对横向排布与顶隙"}</span></h3><FrontElevation mode={mode} container={container} floorPositions={mode === "carton" ? result.directPlan.positions : result.palletPlan.positions} layers={result.layers} layerHeight={result.effectiveCarton.h} palletHeight={pallet.h} stackHeight={result.stackHeight} columnHeight={result.columnHeight} palletStackLevels={result.palletStackLevels} sideOffset={sideClearance} language={reportLanguage} /></div>
           {mode === "pallet" && <div className="report-view compact-report-view"><h3>{reportIsEnglish ? "SINGLE-PALLET CARTON PATTERN" : "单托盘纸箱排布"} <span>{reportIsEnglish ? `${result.cartonOnPallet.count} cartons/layer × ${result.palletLayers} layers` : `每层 ${result.cartonOnPallet.count} 箱 × ${result.palletLayers} 层`}</span></h3><PlanCanvas title={reportIsEnglish ? "Report pallet pattern" : "报告托盘排布图"} dimensions={{ l: pallet.l, w: pallet.w }} positions={result.cartonOnPallet.positions} offsetX={edgeInset} offsetY={edgeInset} variant="pallet-carton" language={reportLanguage} /></div>}
         </section>
 
-        <section className="report-section report-principles">
+        <section className="report-section report-principles report-page-break">
           <h2><span>04</span> {reportIsEnglish ? "PLACEMENT RULES & ON-SITE CHECK" : "摆放原则与现场复核"}</h2>
           {reportIsEnglish ? <ol>
             <li>Keep carton height upright. Do not lay cartons on their side or invert them; only 90° rotation of length/width on the base is permitted.</li>
             <li>Calculations use nominal carton dimensions plus tolerance. Maintain the specified horizontal gap; do not compress, overlap or cross boundaries.</li>
             <li>Cartons must remain inside the pallet load surface after edge inset. Flat-bottom pallets may be double stacked only after load-bearing conditions are confirmed.</li>
             <li>The algorithm compares single-level tall pallets and double-level lower pallets, maximizing carton quantity first and using fewer pallets when totals tie. Each pallet uses complete carton layers only.</li>
-            <li>The default customer pallet-height range is 1,500–1,800 mm and must be adjusted to measured elevator, doorway and handling-route limits. Each pallet in a double stack must still meet the minimum height.</li>
+            <li>The default customer pallet-height range is 1,200–1,800 mm with double stacking enabled. Adjust it to measured elevator, doorway and handling-route limits. Each pallet in a double stack must still meet the minimum height.</li>
             <li>Pallet chargeable volume is calculated from the actual packing envelope of every pallet and remains subject to carrier remeasurement.</li>
             <li>Before loading, verify measured internal container dimensions, door frame and corner posts, total and axle load, centre of gravity, carton compression strength and unloading sequence.</li>
           </ol> : <ol>
@@ -1501,7 +1685,7 @@ export default function LoadPlanner() {
             <li>纸箱按标称尺寸加尺寸余量计算，相邻纸箱保留水平间隙，不挤压、不重叠、不越界。</li>
             <li>托盘纸箱不得超过退边后的有效承载面；纸箱高度始终朝上；平底托盘可在已确认承载条件下上下双层叠放。</li>
             <li>算法比较单层高托与双层矮托，纸箱总数优先，数量相同时优先少用托盘；上下两托均只放完整纸箱层。</li>
-            <li>默认客户高度范围为 1500–1800 mm，可按客户电梯、门洞和搬运通道实测值修改；双层方案仍须每托满足最低高度。</li>
+            <li>默认客户高度范围为 1200–1800 mm，默认允许双层；可按客户电梯、门洞和搬运通道实测值修改，双层方案仍须每托满足最低高度。</li>
             <li>托盘计费体积按各托盘当前包装外廓累计计算，最终以承运人复尺为准。</li>
             <li>正式装柜前必须复核实测柜内尺寸、门框角柱、总载重、轴载、重心、纸箱抗压和装卸顺序。</li>
           </ol>}
@@ -1510,7 +1694,8 @@ export default function LoadPlanner() {
 
         <footer className="report-signoff"><div>{reportIsEnglish ? "Prepared by:" : "制表："}<span /></div><div>{reportIsEnglish ? "Checked by:" : "复核："}<span /></div><div>{reportIsEnglish ? "Approved by:" : "批准："}<span /></div><div>{reportIsEnglish ? "Date:" : "日期："}<span /></div></footer>
         <div className="report-document-footer"><span>© 2026 {reportIsEnglish ? "Zhejiang Megee Industry Co., Ltd." : "浙江美集实业有限公司"} · MEGEE COSPACK</span><b>Container Planner v{APP_VERSION} · {reportNumber}</b></div>
-      </section>
+        <div className="report-running-footer" aria-hidden="true"><span>{reportIsEnglish ? "Zhejiang Megee Industry Co., Ltd." : "浙江美集实业有限公司"} · MEGEE COSPACK</span><b>v{APP_VERSION} · {reportNumber}</b></div>
+      </section>}
     </main>
   );
 }

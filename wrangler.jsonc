@@ -4,10 +4,6 @@
   "main": "dist/server/index.js",
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
-  "no_bundle": true,
-  "rules": [
-    { "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }
-  ],
   "assets": {
     "binding": "ASSETS",
     "directory": "dist/client"
@@ -15,5 +11,5 @@
   "routes": [
     { "pattern": "container.lostravelerk.com", "custom_domain": true }
   ],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
 }
