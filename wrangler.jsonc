@@ -12,5 +12,8 @@
     "binding": "ASSETS",
     "directory": "dist/client"
   },
+  "routes": [
+    { "pattern": "container.lostravelerk.com", "custom_domain": true }
+  ],
   "observability": { "enabled": true }
 }

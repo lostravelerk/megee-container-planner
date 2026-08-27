@@ -10,8 +10,9 @@
 - 20GP、40GP、40HQ 与自定义集装箱内部尺寸
 - 20GP、40GP、40HQ/40HC 三种柜型同步对比
 - EA/BOX 可选输入（无默认值），输入后同步换算总 EA
-- 产品方案库支持保存方案版本、重新打开和直接查看客户报告
-- Cost 只读同步白名单：产品家族/系列号、产品代码、品名、装箱数量（EA/BOX）；报告备注在本系统人工填写
+- 标准 Excel 导入字段：家族、产品代码、品名、EA/BOX、外箱尺寸；导入后自动生成全部产品的三种柜型方案
+- 产品方案库支持检索、人工备注、保存方案版本、重新打开和直接查看客户报告
+- 随版本提供 217 款产品快照（214 款数据完整，3 款待补充），客户也可下载空白模板并导入自己的数据
 - 纸箱、托盘尺寸、公差、间隙、退边与集装箱安全余量均可编辑
 - 平底托盘自动比较单层高托与上下双层矮托，以全柜纸箱总数优先，数量相同优先少用托盘
 - 托盘客户高度区间默认 1500–1800 mm，可按项目修改；双层时每托仍须满足最低高度
@@ -22,17 +23,18 @@
 - 所有计算在浏览器内完成，不上传业务数据
 - 一键输出中文版 / English 正式装柜报告，可打印或保存为 PDF
 - 报告包含外箱 L × W × H 示意、MEGEE COSPACK 胶带面、装柜编号顺序、0°/90° 数量、水平/纵向/横向剖面及现场复核签字栏
-- 页面与报告统一标注 Container Planner v2.1.0，报告附编号与主数据/算法版本便于追溯
+- SAP 风紧凑响应式界面；390 px 手机端与桌面端均已进行页面级横向溢出检查
+- 页面与报告统一标注 Container Planner v2.2.0，报告附编号、产品导入时间、方案/算法版本与复核状态便于追溯
 
 详细发布门槛见 [ACCEPTANCE.md](./ACCEPTANCE.md)。
 
 ## 当前发布
 
-- Cloudflare Workers：<https://loadwise-container-planner.lostravelerk-717.workers.dev>
+- 正式客户入口：<https://container.lostravelerk.com/>
+- Cloudflare Pages 备用入口：<https://megee-container-planner.pages.dev/>
 - 已移除 ChatGPT Sites 运行配置，正式构建不会发布到 `chatgpt.site`。
-- `workers.dev` 在部分中国大陆网络的连通性不能保证；正式客户使用建议绑定由 Cloudflare 管理的自有域名。
-- Cost 账号 `cMacStudio@WorkBuddy` 已列为只读同步身份。真实自动同步仍需可由 Worker 访问的 API/Tunnel 与服务凭据；详细契约见 [docs/COST_INTEGRATION.md](./docs/COST_INTEGRATION.md)。
-- 接口接通前，方案库保存于当前浏览器；不得把该状态误称为公司级云端同步。
+- 正式入口使用由 Cloudflare 管理的自定义域名，避免把 `workers.dev` 或 `pages.dev` 作为客户主入口；具体连通性仍取决于客户所在网络。
+- 应用不连接内部 Cost 系统；Excel 解析、装柜计算、方案与人工备注均在当前浏览器完成，不上传业务数据。
 
 ## 本地运行
 

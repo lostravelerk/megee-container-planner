@@ -39,6 +39,17 @@ test("keeps Megee carton, pallet and height defaults in source", async () => {
   assert.match(source, /pallet:\s*\{\s*l:\s*1000,\s*w:\s*1200,\s*h:\s*150\s*\}/);
   assert.match(source, /useState\(1800\)/);
   assert.match(source, /useState\(70\)/);
+  assert.match(source, /STANDARD_IMPORT_HEADERS.*家族.*产品代码.*品名.*EA\/BOX.*外箱尺寸/);
+  assert.doesNotMatch(source, /api\/cost\/products|同步 Cost|只读同步 Cost/);
+});
+
+test("ships the verified product snapshot and standard import template", async () => {
+  const payload = JSON.parse(await readFile(new URL("../public/megee-products.json", import.meta.url), "utf8"));
+  assert.equal(payload.products.length, 217);
+  assert.equal(payload.products.filter((product) => product.carton && product.eaPerBox).length, 214);
+  assert.equal(new Set(payload.products.map((product) => product.code)).size, 217);
+  const template = await readFile(new URL("../public/产品装柜规划导入模板.xlsx", import.meta.url));
+  assert.ok(template.byteLength > 1_000);
 });
 
 test("emits absolute social metadata from the incoming host", async () => {
