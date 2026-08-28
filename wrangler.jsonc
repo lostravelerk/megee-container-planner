@@ -8,6 +8,14 @@
     "binding": "ASSETS",
     "directory": "dist/client"
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "container-planner-shares",
+      "database_id": "0d4d5b58-af01-433d-a8af-01c98f5c4da3",
+      "migrations_dir": "migrations"
+    }
+  ],
   "routes": [
     { "pattern": "container.lostravelerk.com", "custom_domain": true }
   ],

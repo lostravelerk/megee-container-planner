@@ -171,6 +171,82 @@ test("plans carton and pallet SKUs together without converting pallet rows back 
   assertValidGeometry(result);
 });
 
+test("keeps cartons inside the measured pallet by default and records an auditable pallet pattern", () => {
+  const result = planMixedContainers([
+    {
+      ...item("PALLET-PATTERN", 30_000, 300, { l: 480, w: 380, h: 350 }),
+      packaging: "pallet",
+      pallet: { l: 1000, w: 1200, h: 150 },
+      palletOverhang: 0,
+    },
+  ], CONTAINER);
+  const planned = result.items[0];
+  assert.equal(planned.palletPlan.overhang, 0);
+  assert.equal(planned.palletPlan.edgeInset, 10);
+  assert.equal(planned.palletPlan.cartonGap, 5);
+  assert.equal(planned.palletPlan.positions.length, planned.palletPlan.cartonsPerLayer);
+  for (const position of planned.palletPlan.positions) {
+    assert.ok(position.x >= planned.palletPlan.surfaceOriginX - 0.001);
+    assert.ok(position.y >= planned.palletPlan.surfaceOriginY - 0.001);
+    assert.ok(position.x + position.w <= planned.palletPlan.surfaceOriginX + planned.palletPlan.palletSurfaceL + 0.001);
+    assert.ok(position.y + position.h <= planned.palletPlan.surfaceOriginY + planned.palletPlan.palletSurfaceW + 0.001);
+  }
+  assert.deepEqual(validateMixedPlan(result), { ok: true, errors: [] });
+});
+
+test("allows only an explicitly entered pallet overhang and expands the physical cargo envelope", () => {
+  const base = {
+    ...item("OVERHANG", 18, 1, { l: 520, w: 400, h: 400 }),
+    packaging: "pallet",
+    pallet: { l: 1000, w: 1200, h: 150 },
+  };
+  const config = {
+    cartonTolerance: 0,
+    palletCartonGap: 0,
+    edgeInset: 0,
+    palletTolerance: 0,
+    palletGap: 0,
+    doorClearance: 0,
+    sideClearance: 0,
+    topClearance: 0,
+  };
+  const forbidden = planMixedContainers([{ ...base, palletOverhang: 0 }], CONTAINER, config);
+  const authorized = planMixedContainers([{ ...base, palletOverhang: 20 }], CONTAINER, config);
+  assert.equal(forbidden.items[0].palletPlan.cartonsPerLayer, 5);
+  assert.equal(authorized.items[0].palletPlan.cartonsPerLayer, 6);
+  assert.equal(authorized.items[0].palletPlan.cargoEnvelopeL, 1040);
+  assert.equal(authorized.items[0].palletPlan.overhang, 20);
+  assert.deepEqual(validateMixedPlan(authorized), { ok: true, errors: [] });
+});
+
+test("uses the configured pallet-to-pallet gap in the real container geometry", () => {
+  const palletItem = {
+    ...item("PALLET-GAP", 2, 1, { l: 1000, w: 1200, h: 1050 }),
+    packaging: "pallet",
+    pallet: { l: 1000, w: 1200, h: 150 },
+    palletOverhang: 0,
+  };
+  const container = { l: 2050, w: 1300, h: 1400, doorW: 1300, doorH: 1400 };
+  const shared = {
+    cartonTolerance: 0,
+    palletCartonGap: 0,
+    edgeInset: 0,
+    palletTolerance: 0,
+    doorClearance: 0,
+    sideClearance: 0,
+    topClearance: 0,
+    palletMinHeight: 1200,
+    palletHeightLimit: 1400,
+    allowDoubleStack: false,
+  };
+  const fits = planMixedContainers([palletItem], container, { ...shared, palletGap: 50 });
+  const split = planMixedContainers([palletItem], container, { ...shared, palletGap: 100 });
+  assert.equal(fits.containers.length, 1);
+  assert.equal(split.containers.length, 2);
+  assert.deepEqual(validateMixedPlan(fits), { ok: true, errors: [] });
+  assert.deepEqual(validateMixedPlan(split), { ok: true, errors: [] });
+});
+
 test("splits a large demand into multiple containers without dropping cartons", () => {
   const result = planMixedContainers([
     item("A", 1_000_000, 500, { l: 480, w: 380, h: 350 }),

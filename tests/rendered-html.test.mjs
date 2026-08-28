@@ -57,7 +57,10 @@ test("offers manual and cascading Megee-material entry for mixed loads", async (
   assert.match(source, /DATA & REPORT STRUCTURE PREFLIGHT: PASS/);
   assert.match(source, /mixed-product-identity-table tbody tr/);
   assert.match(source, /planIndex > 0 \? " report-page-break"/);
-  assert.doesNotMatch(source, /复制分享链接|邮件分享|mailto:|navigator\.clipboard/);
+  assert.match(source, /创建稳定短链接/);
+  assert.match(source, /fetch\("\/api\/shares"/);
+  assert.match(source, /navigator\.clipboard\?\.writeText/);
+  assert.doesNotMatch(source, /mailto:|location\.search.*rows|URLSearchParams.*rows/);
 });
 
 test("keeps formal PDF pagination rules explicit", async () => {

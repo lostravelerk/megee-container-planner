@@ -59,8 +59,8 @@ type SavedPlan = {
 
 const PLAN_STORAGE_KEY = "megee-loadwise-plans-v1";
 const PRODUCT_STORAGE_KEY = "megee-container-products-v2";
-const APP_VERSION = "2.5.0";
-const ALGORITHM_VERSION = "LW 2.5";
+const APP_VERSION = "2.6.0";
+const ALGORITHM_VERSION = "LW 2.6 / KIT 1.0";
 const BUILD_VERSION = import.meta.env.VITE_BUILD_COMMIT || "local";
 
 const CONTAINERS: Record<string, Dimensions> = {
@@ -746,8 +746,14 @@ function createAutomaticProductPlans(
   return [...automaticPlans, ...manualPlans];
 }
 
-export default function LoadPlanner() {
-  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("library");
+export default function LoadPlanner({
+  initialShareId = "",
+}: {
+  initialShareId?: string;
+}) {
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>(
+    initialShareId ? "mixed" : "library",
+  );
   const [inputMethod, setInputMethod] = useState<InputMethod>("excel");
   const [mode, setMode] = useState<Mode>("carton");
   const [view, setView] = useState<ViewMode>("top");
@@ -1259,7 +1265,7 @@ export default function LoadPlanner() {
         </section>
       )}
 
-      {workspaceView === "mixed" && <MixedPlanner language={reportLanguage} products={products} containers={CONTAINERS} appVersion={APP_VERSION} buildVersion={BUILD_VERSION} />}
+      {workspaceView === "mixed" && <MixedPlanner language={reportLanguage} products={products} containers={CONTAINERS} appVersion={APP_VERSION} buildVersion={BUILD_VERSION} initialShareId={initialShareId} />}
 
       {workspaceView === "planner" && <><section className="mode-section" aria-labelledby="package-unit-label">
         <p className="mode-label" id="package-unit-label">{tr("最大包装单元", "MAXIMUM PACKAGING UNIT")}</p>

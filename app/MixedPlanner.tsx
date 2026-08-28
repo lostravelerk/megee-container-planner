@@ -1,11 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   cartonsForDemand,
   planMixedContainers,
   validateMixedPlan,
 } from "../lib/mixedPacking.js";
+import {
+  leastCommonMultiple,
+  optimizeKitPurchases,
+  validateKitAssignments,
+} from "../lib/kitOptimizer.js";
 
 type Dimensions = {
   l: number;
@@ -29,6 +34,7 @@ type ProductOption = {
 };
 type MixedRow = {
   id: string;
+  itemGroup: string;
   series: string;
   code: string;
   name: string;
@@ -41,6 +47,26 @@ type MixedRow = {
   palletL: number | "";
   palletW: number | "";
   palletH: number | "";
+  palletOverhang: number | "";
+};
+type SharedPlanPayload = {
+  version: number;
+  title?: string;
+  containerType: string;
+  rows: Array<Partial<MixedRow>>;
+  config?: Partial<{
+    cartonTolerance: number;
+    cartonGap: number;
+    skuGap: number;
+    doorClearance: number;
+    sideClearance: number;
+    topClearance: number;
+    palletCartonGap: number;
+    palletGap: number;
+    palletTolerance: number;
+    edgeInset: number;
+    allowSkuInterlock: boolean;
+  }>;
 };
 
 const COLORS = [
@@ -57,6 +83,7 @@ const COLORS = [
 function emptyRow(index: number, id = `mix-initial-${index}`): MixedRow {
   return {
     id,
+    itemGroup: "",
     series: "",
     code: "",
     name: "",
@@ -69,6 +96,7 @@ function emptyRow(index: number, id = `mix-initial-${index}`): MixedRow {
     palletL: 1000,
     palletW: 1200,
     palletH: 150,
+    palletOverhang: 0,
   };
 }
 
@@ -77,6 +105,131 @@ function formatNumber(value: number, digits = 0) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+function PalletPatternView({
+  item,
+  language,
+}: {
+  item: ReturnType<typeof planMixedContainers>["items"][number];
+  language: Language;
+}) {
+  if (item.packaging !== "pallet" || !item.palletPlan?.positions?.length)
+    return null;
+  const plan = item.palletPlan;
+  const diagramL = Math.max(
+    plan.cargoEnvelopeL,
+    plan.surfaceOriginX + plan.palletSurfaceL,
+  );
+  const diagramW = Math.max(
+    plan.cargoEnvelopeW,
+    plan.surfaceOriginY + plan.palletSurfaceW,
+  );
+  const isEnglish = language === "en";
+  return (
+    <article className="pallet-pattern-card">
+      <header>
+        <div>
+          <b>{item.code || item.name || item.id}</b>
+          <span>{item.name}</span>
+        </div>
+        <strong>
+          {plan.cartonsPerLayer} {isEnglish ? "CTN/LAYER" : "箱/层"} ·{" "}
+          {plan.layersPerPallet} {isEnglish ? "LAYERS" : "层"}
+        </strong>
+      </header>
+      <div className="pallet-pattern-body">
+        <svg
+          viewBox={`0 0 ${diagramL} ${diagramW}`}
+          role="img"
+          aria-label={
+            isEnglish
+              ? `Pallet carton pattern for ${item.code || item.name}`
+              : `${item.code || item.name} 托盘纸箱排布俯视图`
+          }
+        >
+          <rect width={diagramL} height={diagramW} fill="#f3f6f8" />
+          <rect
+            x={plan.palletOriginX}
+            y={plan.palletOriginY}
+            width={item.pallet.l}
+            height={item.pallet.w}
+            rx="14"
+            fill="#d8b679"
+            fillOpacity=".32"
+            stroke="#8b6328"
+            strokeWidth="9"
+          />
+          <rect
+            x={plan.surfaceOriginX}
+            y={plan.surfaceOriginY}
+            width={plan.palletSurfaceL}
+            height={plan.palletSurfaceW}
+            fill="none"
+            stroke={plan.overhang > 0 ? "#b95f00" : "#13734a"}
+            strokeWidth="7"
+            strokeDasharray="24 15"
+          />
+          {plan.positions.map((position, index) => (
+            <g key={`${position.x}-${position.y}-${index}`}>
+              <rect
+                x={position.x}
+                y={position.y}
+                width={position.w}
+                height={position.h}
+                fill={position.rotated ? "#cfe4f7" : "#e0edf8"}
+                stroke="#0a6ed1"
+                strokeWidth="6"
+              />
+              <text
+                x={position.x + position.w / 2}
+                y={position.y + position.h / 2}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill="#16415e"
+                fontSize="42"
+                fontWeight="700"
+              >
+                {position.rotated ? "90°" : "0°"}
+              </text>
+            </g>
+          ))}
+        </svg>
+        <dl>
+          <div>
+            <dt>{isEnglish ? "ACTUAL PALLET" : "实际托盘"}</dt>
+            <dd>{item.pallet.l} × {item.pallet.w} × {item.pallet.h} mm</dd>
+          </div>
+          <div>
+            <dt>{isEnglish ? "CARTON / GAP" : "纸箱 / 箱隙"}</dt>
+            <dd>{item.carton.l} × {item.carton.w} × {item.carton.h} mm · {plan.cartonGap} mm</dd>
+          </div>
+          <div>
+            <dt>{isEnglish ? "EDGE RULE" : "边界规则"}</dt>
+            <dd>
+              {plan.overhang > 0
+                ? `${isEnglish ? "Overhang" : "允许外伸"} ${plan.overhang} mm/side`
+                : `${isEnglish ? "No overhang" : "禁止外伸"} · ${isEnglish ? "inset" : "退边"} ${plan.edgeInset} mm/side`}
+            </dd>
+          </div>
+          <div>
+            <dt>{isEnglish ? "LOADED PALLET" : "组托结果"}</dt>
+            <dd>
+              {plan.cartonsPerPallet} CTN/PLT · {formatNumber(plan.stackHeight)} mm
+            </dd>
+          </div>
+          <div>
+            <dt>{isEnglish ? "CARGO ENVELOPE" : "货物实际外廓"}</dt>
+            <dd>{formatNumber(plan.cargoEnvelopeL)} × {formatNumber(plan.cargoEnvelopeW)} × {formatNumber(plan.stackHeight)} mm</dd>
+          </div>
+          <div>
+            <dt>{isEnglish ? "PLANNING ENVELOPE" : "含歪斜装柜外廓"}</dt>
+            <dd>{formatNumber(item.loadingUnit.l)} × {formatNumber(item.loadingUnit.w)} × {formatNumber(item.loadingUnit.h)} mm</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+  );
 }
 
 function MixedCrossSections({
@@ -511,15 +664,31 @@ export default function MixedPlanner({
   containers,
   appVersion,
   buildVersion,
+  initialShareId = "",
 }: {
   language: Language;
   products: ProductOption[];
   containers: Record<string, Dimensions>;
   appVersion: string;
   buildVersion: string;
+  initialShareId?: string;
 }) {
   const isEnglish = language === "en";
   const tr = (zh: string, en: string) => (isEnglish ? en : zh);
+  const kitMessage = (message: string) => {
+    if (isEnglish) return message;
+    if (/No feasible kit quantity/i.test(message))
+      return "当前采购范围内不存在可行的齐套数量组合。";
+    if (/Every SKU requires an Item Group/i.test(message))
+      return "每一款参与优化的 SKU 都必须填写项次。";
+    if (/same SKU cannot appear more than once/i.test(message))
+      return "同一次齐套优化中，同一 SKU 不可重复录入。";
+    if (/Add at least one SKU/i.test(message))
+      return "请先录入至少一款有效 SKU。";
+    if (/Minimum quantity step exceeds/i.test(message))
+      return "最小采购步长超出系统安全整数范围。";
+    return message;
+  };
   const [inputMode, setInputMode] = useState<MixedInputMode>("material");
   const [rows, setRows] = useState<MixedRow[]>([
     emptyRow(1),
@@ -533,9 +702,111 @@ export default function MixedPlanner({
   const [doorClearance, setDoorClearance] = useState(80);
   const [sideClearance, setSideClearance] = useState(30);
   const [topClearance, setTopClearance] = useState(50);
+  const [palletCartonGap, setPalletCartonGap] = useState(5);
+  const [palletGap, setPalletGap] = useState(20);
+  const [palletTolerance, setPalletTolerance] = useState(10);
+  const [edgeInset, setEdgeInset] = useState(10);
   const [allowSkuInterlock, setAllowSkuInterlock] = useState(true);
   const [activeContainer, setActiveContainer] = useState(0);
   const [printError, setPrintError] = useState("");
+  const [kitContainerCount, setKitContainerCount] = useState(1);
+  const [kitMode, setKitMode] = useState<
+    "utilization" | "procurement" | "balanced"
+  >("utilization");
+  const [kitTopN, setKitTopN] = useState<10 | 20>(10);
+  const [kitConstraints, setKitConstraints] = useState<
+    Record<string, { min: number | ""; target: number | ""; max: number | ""; ratio: number | "" }>
+  >({});
+  const [kitCalculation, setKitCalculation] = useState<{
+    signature: string;
+    data: ReturnType<typeof optimizeKitPurchases>;
+  } | null>(null);
+  const [kitBusy, setKitBusy] = useState(false);
+  const [expandedKitRank, setExpandedKitRank] = useState<number | null>(null);
+  const [appliedKit, setAppliedKit] = useState<{
+    signature: string;
+    recommendation: ReturnType<typeof optimizeKitPurchases>["recommendations"][number];
+    groups: ReturnType<typeof optimizeKitPurchases>["groups"];
+    containerCount: number;
+    containerType: string;
+    mode: string;
+  } | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareExpiryDays, setShareExpiryDays] = useState("0");
+  const [shareAccessCode, setShareAccessCode] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareError, setShareError] = useState("");
+  const [shareLoadCode, setShareLoadCode] = useState("");
+  const [shareLoadState, setShareLoadState] = useState<
+    "idle" | "loading" | "protected" | "loaded" | "error"
+  >(initialShareId ? "loading" : "idle");
+
+  const applySharedPayload = useCallback((payload: SharedPlanPayload) => {
+    const sharedRows = payload.rows.map((row, index) => ({
+      ...emptyRow(index + 1, `shared-${index + 1}`),
+      ...row,
+      id: `shared-${index + 1}`,
+      itemGroup: String(row.itemGroup ?? ""),
+      series: String(row.series ?? ""),
+      code: String(row.code ?? ""),
+      name: String(row.name ?? ""),
+      packaging: row.packaging === "pallet" ? "pallet" as const : "carton" as const,
+    }));
+    setRows(sharedRows.length ? sharedRows : [emptyRow(1)]);
+    setInputMode("manual");
+    if (containers[payload.containerType]) setContainerType(payload.containerType);
+    const config = payload.config ?? {};
+    if (Number.isFinite(config.cartonTolerance)) setCartonTolerance(Number(config.cartonTolerance));
+    if (Number.isFinite(config.cartonGap)) setCartonGap(Number(config.cartonGap));
+    if (Number.isFinite(config.skuGap)) setSkuGap(Number(config.skuGap));
+    if (Number.isFinite(config.doorClearance)) setDoorClearance(Number(config.doorClearance));
+    if (Number.isFinite(config.sideClearance)) setSideClearance(Number(config.sideClearance));
+    if (Number.isFinite(config.topClearance)) setTopClearance(Number(config.topClearance));
+    if (Number.isFinite(config.palletCartonGap)) setPalletCartonGap(Number(config.palletCartonGap));
+    if (Number.isFinite(config.palletGap)) setPalletGap(Number(config.palletGap));
+    if (Number.isFinite(config.palletTolerance)) setPalletTolerance(Number(config.palletTolerance));
+    if (Number.isFinite(config.edgeInset)) setEdgeInset(Number(config.edgeInset));
+    if (typeof config.allowSkuInterlock === "boolean") setAllowSkuInterlock(config.allowSkuInterlock);
+    setActiveContainer(0);
+    setAppliedKit(null);
+  }, [containers]);
+
+  const fetchSharedPlan = useCallback(async (accessCode = "") => {
+    if (!initialShareId) return;
+    setShareLoadState("loading");
+    setShareError("");
+    try {
+      const response = await fetch(`/api/shares/${initialShareId}`, {
+        headers: accessCode ? { "x-share-code": accessCode } : undefined,
+        cache: "no-store",
+      });
+      const data = await response.json() as {
+        payload?: SharedPlanPayload;
+        protected?: boolean;
+        error?: string;
+      };
+      if (response.status === 401 && data.protected) {
+        setShareLoadState("protected");
+        return;
+      }
+      if (!response.ok || !data.payload)
+        throw new Error(data.error || "Shared plan could not be loaded.");
+      applySharedPayload(data.payload);
+      setShareLoadState("loaded");
+    } catch (error) {
+      setShareLoadState("error");
+      setShareError(
+        error instanceof Error ? error.message : "Shared plan could not be loaded.",
+      );
+    }
+  }, [applySharedPayload, initialShareId]);
+
+  useEffect(() => {
+    if (!initialShareId) return undefined;
+    const task = window.setTimeout(() => void fetchSharedPlan(), 0);
+    return () => window.clearTimeout(task);
+  }, [fetchSharedPlan, initialShareId]);
 
   const validItems = useMemo(
     () =>
@@ -549,11 +820,15 @@ export default function MixedPlanner({
         ];
         if (row.packaging === "pallet")
           required.push(row.palletL, row.palletW, row.palletH);
-        if (required.some((value) => value === "" || Number(value) <= 0))
+        if (
+          required.some((value) => value === "" || Number(value) <= 0) ||
+          (row.packaging === "pallet" && row.palletOverhang === "")
+        )
           return [];
         return [
           {
             id: row.id,
+            itemGroup: row.itemGroup.trim(),
             series: row.series,
             code: row.code,
             name: row.name,
@@ -569,6 +844,44 @@ export default function MixedPlanner({
                     h: Number(row.palletH),
                   }
                 : undefined,
+            palletOverhang:
+              row.packaging === "pallet" ? Number(row.palletOverhang) : 0,
+          },
+        ];
+      }),
+    [rows],
+  );
+  const kitItems = useMemo(
+    () =>
+      rows.flatMap((row) => {
+        const required = [row.eaPerBox, row.l, row.w, row.h];
+        if (row.packaging === "pallet")
+          required.push(row.palletL, row.palletW, row.palletH);
+        if (
+          required.some((value) => value === "" || Number(value) <= 0) ||
+          (row.packaging === "pallet" && row.palletOverhang === "")
+        )
+          return [];
+        return [
+          {
+            id: row.id,
+            itemGroup: row.itemGroup.trim(),
+            series: row.series,
+            code: row.code,
+            name: row.name,
+            eaPerBox: Number(row.eaPerBox),
+            carton: { l: Number(row.l), w: Number(row.w), h: Number(row.h) },
+            packaging: row.packaging,
+            pallet:
+              row.packaging === "pallet"
+                ? {
+                    l: Number(row.palletL),
+                    w: Number(row.palletW),
+                    h: Number(row.palletH),
+                  }
+                : undefined,
+            palletOverhang:
+              row.packaging === "pallet" ? Number(row.palletOverhang) : 0,
           },
         ];
       }),
@@ -584,6 +897,10 @@ export default function MixedPlanner({
         doorClearance,
         sideClearance,
         topClearance,
+        palletCartonGap,
+        palletGap,
+        palletTolerance,
+        edgeInset,
         allowSkuInterlock,
       }),
     [
@@ -595,6 +912,10 @@ export default function MixedPlanner({
       doorClearance,
       sideClearance,
       topClearance,
+      palletCartonGap,
+      palletGap,
+      palletTolerance,
+      edgeInset,
       allowSkuInterlock,
     ],
   );
@@ -606,6 +927,7 @@ export default function MixedPlanner({
     () =>
       rows.filter((row) => {
         const started = Boolean(
+          row.itemGroup ||
           row.series ||
           row.code ||
           row.name ||
@@ -617,8 +939,15 @@ export default function MixedPlanner({
     [rows, validItems],
   );
   const preflight = useMemo(() => validateMixedPlan(result), [result]);
+  const kitAssignmentPreflight = useMemo(
+    () => validateKitAssignments(validItems),
+    [validItems],
+  );
   const reportReady =
-    validItems.length > 0 && incompleteRows.length === 0 && preflight.ok;
+    validItems.length > 0 &&
+    incompleteRows.length === 0 &&
+    preflight.ok &&
+    kitAssignmentPreflight.ok;
   const selectedPlan =
     result.containers[
       Math.min(activeContainer, Math.max(0, result.containers.length - 1))
@@ -643,10 +972,213 @@ export default function MixedPlanner({
     [products],
   );
 
-  const updateRow = (id: string, patch: Partial<MixedRow>) =>
+  const kitGroupIds = useMemo(
+    () => [
+      ...new Set(kitItems.map((item) => item.itemGroup).filter(Boolean)),
+    ].sort((left, right) => left.localeCompare(right, "zh-CN", { numeric: true })),
+    [kitItems],
+  );
+  const kitGroupDrafts = useMemo(
+    () =>
+      kitGroupIds.map((id) => {
+        const members = kitItems.filter((item) => item.itemGroup === id);
+        const step = leastCommonMultiple(members.map((item) => item.eaPerBox));
+        return { id, members, step: step.ok ? step.value : 0, error: step.reason };
+      }),
+    [kitGroupIds, kitItems],
+  );
+  const kitSignature = useMemo(
+    () =>
+      JSON.stringify({
+        items: kitItems,
+        containerType,
+        kitContainerCount,
+        kitMode,
+        kitTopN,
+        kitConstraints,
+        cartonTolerance,
+        cartonGap,
+        skuGap,
+        doorClearance,
+        sideClearance,
+        topClearance,
+        palletCartonGap,
+        palletGap,
+        palletTolerance,
+        edgeInset,
+        allowSkuInterlock,
+      }),
+    [
+      kitItems,
+      containerType,
+      kitContainerCount,
+      kitMode,
+      kitTopN,
+      kitConstraints,
+      cartonTolerance,
+      cartonGap,
+      skuGap,
+      doorClearance,
+      sideClearance,
+      topClearance,
+      palletCartonGap,
+      palletGap,
+      palletTolerance,
+      edgeInset,
+      allowSkuInterlock,
+    ],
+  );
+  const currentKitCalculation =
+    kitCalculation?.signature === kitSignature ? kitCalculation.data : null;
+  const currentAppliedKit =
+    appliedKit?.signature === kitSignature ? appliedKit : null;
+
+  const updateRow = (id: string, patch: Partial<MixedRow>) => {
     setRows((current) =>
       current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
     );
+    setAppliedKit(null);
+  };
+  const updateKitConstraint = (
+    groupId: string,
+    key: "min" | "target" | "max" | "ratio",
+    value: number | "",
+  ) =>
+    setKitConstraints((current) => ({
+      ...current,
+      [groupId]: {
+        min: current[groupId]?.min ?? "",
+        target: current[groupId]?.target ?? "",
+        max: current[groupId]?.max ?? "",
+        ratio: current[groupId]?.ratio ?? "",
+        [key]: value,
+      },
+    }));
+  const calculateKitRecommendations = () => {
+    setKitBusy(true);
+    setExpandedKitRank(null);
+    window.setTimeout(() => {
+      const data = optimizeKitPurchases(
+        kitItems,
+        container,
+        {
+          cartonTolerance,
+          cartonGap,
+          skuGap,
+          doorClearance,
+          sideClearance,
+          topClearance,
+          palletCartonGap,
+          palletGap,
+          palletTolerance,
+          edgeInset,
+          allowSkuInterlock,
+        },
+        {
+          containerCount: kitContainerCount,
+          topN: kitTopN,
+          mode: kitMode,
+          constraints: kitConstraints,
+        },
+      );
+      setKitCalculation({ signature: kitSignature, data });
+      setKitBusy(false);
+    }, 30);
+  };
+  const applyKitRecommendation = (
+    recommendation: ReturnType<typeof optimizeKitPurchases>["recommendations"][number],
+  ) => {
+    setRows((current) =>
+      current.map((row) => ({
+        ...row,
+        productQuantity:
+          recommendation.groupQuantities[row.itemGroup.trim()] ??
+          row.productQuantity,
+      })),
+    );
+    if (currentKitCalculation) {
+      setAppliedKit({
+        signature: kitSignature,
+        recommendation,
+        groups: currentKitCalculation.groups,
+        containerCount: kitContainerCount,
+        containerType,
+        mode: kitMode,
+      });
+    }
+    setActiveContainer(0);
+    window.setTimeout(() =>
+      document
+        .querySelector(".mixed-summary-grid")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    0);
+  };
+  const createSharedPlan = async () => {
+    if (!reportReady) {
+      setShareError(
+        tr(
+          "方案尚未通过数据与装柜自检，不能分享。",
+          "The plan has not passed data and loading preflight and cannot be shared.",
+        ),
+      );
+      return;
+    }
+    setShareBusy(true);
+    setShareError("");
+    setShareUrl("");
+    try {
+      const validIds = new Set(validItems.map((item) => item.id));
+      const response = await fetch("/api/shares", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: {
+            version: 1,
+            title: `MIX-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`,
+            containerType,
+            rows: rows.filter((row) => validIds.has(row.id)),
+            config: {
+              cartonTolerance,
+              cartonGap,
+              skuGap,
+              doorClearance,
+              sideClearance,
+              topClearance,
+              palletCartonGap,
+              palletGap,
+              palletTolerance,
+              edgeInset,
+              allowSkuInterlock,
+            },
+          },
+          expiryDays: Number(shareExpiryDays) || null,
+          accessCode: shareAccessCode.trim(),
+        }),
+      });
+      const data = await response.json() as {
+        id?: string;
+        url?: string;
+        adminToken?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.url || !data.id)
+        throw new Error(data.error || "Could not create the shared plan.");
+      setShareUrl(data.url);
+      if (data.adminToken)
+        localStorage.setItem(`megee-share-admin-${data.id}`, data.adminToken);
+      await navigator.clipboard?.writeText(data.url);
+    } catch (error) {
+      setShareError(
+        error instanceof Error ? error.message : "Could not create the shared plan.",
+      );
+    } finally {
+      setShareBusy(false);
+    }
+  };
+  const copyShareUrl = async () => {
+    if (!shareUrl) return;
+    await navigator.clipboard?.writeText(shareUrl);
+  };
   const printReport = async () => {
     if (!reportReady) {
       const detail = incompleteRows.length
@@ -654,7 +1186,8 @@ export default function MixedPlanner({
             `${incompleteRows.length} 行已开始但字段未完整。`,
             `${incompleteRows.length} started row(s) are incomplete.`,
           )
-        : preflight.errors[0] ||
+        : kitAssignmentPreflight.errors[0] ||
+          preflight.errors[0] ||
           tr("请先完成有效产品数据。", "Complete valid product data first.");
       setPrintError(detail);
       return;
@@ -669,6 +1202,15 @@ export default function MixedPlanner({
         .length ?? 0;
     const packagingRows =
       report?.querySelectorAll(".mixed-packaging-table tbody tr").length ?? 0;
+    const kitRows =
+      report?.querySelectorAll(".kit-selection-report tbody tr").length ?? 0;
+    const palletPatternCount =
+      report?.querySelectorAll(
+        ".report-pallet-patterns .pallet-pattern-card",
+      ).length ?? 0;
+    const expectedPalletPatterns = result.items.filter(
+      (item) => item.packaging === "pallet",
+    ).length;
     const containerSections = [
       ...(report?.querySelectorAll<HTMLElement>(".mixed-container-report") ??
         []),
@@ -686,6 +1228,20 @@ export default function MixedPlanner({
         tr(
           "产品表行数与有效 SKU 数不一致。",
           "Product-table row counts do not match valid SKUs.",
+        ),
+      );
+    if (currentAppliedKit && kitRows !== currentAppliedKit.groups.length)
+      structureErrors.push(
+        tr(
+          "齐套采购组合表与项次数量不一致。",
+          "Kit purchase table rows do not match the Item Groups.",
+        ),
+      );
+    if (palletPatternCount !== expectedPalletPatterns)
+      structureErrors.push(
+        tr(
+          "托盘排箱视图数量与托盘 SKU 数量不一致。",
+          "Pallet-pattern view count does not match palletized SKUs.",
         ),
       );
     if (containerSections.length !== result.containers.length)
@@ -746,6 +1302,7 @@ export default function MixedPlanner({
       palletL: 1000,
       palletW: 1200,
       palletH: 150,
+      palletOverhang: 0,
     });
   const selectProduct = (id: string, code: string) => {
     const product = products.find((item) => item.code === code);
@@ -761,10 +1318,11 @@ export default function MixedPlanner({
       l: product.carton?.l ?? 480,
       w: product.carton?.w ?? 380,
       h: product.carton?.h ?? 350,
-      packaging: product.packaging === "pallet" ? "pallet" : "carton",
+      packaging: "carton",
       palletL: product.pallet?.l ?? 1000,
       palletW: product.pallet?.w ?? 1200,
       palletH: product.pallet?.h ?? 150,
+      palletOverhang: 0,
     });
   };
   return (
@@ -785,6 +1343,15 @@ export default function MixedPlanner({
           </div>
           <div className="mixed-primary-actions">
             <button
+              disabled={!reportReady}
+              onClick={() => {
+                setShareOpen((current) => !current);
+                setShareError("");
+              }}
+            >
+              {tr("网页分享", "Share Web Plan")}
+            </button>
+            <button
               className="primary"
               disabled={!reportReady}
               onClick={printReport}
@@ -797,6 +1364,120 @@ export default function MixedPlanner({
           <div className="mixed-error print-preflight-error">
             <b>{tr("报告自检未通过", "REPORT PREFLIGHT FAILED")}</b>
             <span>{printError}</span>
+          </div>
+        ) : null}
+        {initialShareId && shareLoadState === "loading" ? (
+          <div className="mixed-share-status panel">
+            {tr("正在载入共享装柜方案…", "Loading shared loading plan…")}
+          </div>
+        ) : null}
+        {initialShareId && shareLoadState === "protected" ? (
+          <div className="mixed-share-unlock panel">
+            <div>
+              <b>{tr("此方案受访问码保护", "THIS PLAN IS ACCESS-CODE PROTECTED")}</b>
+              <span>
+                {tr(
+                  "请输入分享人提供的访问码。",
+                  "Enter the access code supplied by the sender.",
+                )}
+              </span>
+            </div>
+            <input
+              type="password"
+              autoComplete="one-time-code"
+              value={shareLoadCode}
+              onChange={(event) => setShareLoadCode(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void fetchSharedPlan(shareLoadCode);
+              }}
+            />
+            <button
+              className="primary"
+              disabled={shareLoadCode.length < 4}
+              onClick={() => void fetchSharedPlan(shareLoadCode)}
+            >
+              {tr("打开方案", "Open Plan")}
+            </button>
+          </div>
+        ) : null}
+        {initialShareId && shareLoadState === "loaded" ? (
+          <div className="mixed-share-copy-notice">
+            <b>{tr("共享方案副本", "SHARED PLAN COPY")}</b>
+            <span>
+              {tr(
+                "可在本页调整产品数量与拼柜参数；原始分享快照不会被改写，需分享调整后的结果时请创建新短链接。",
+                "You may adjust quantities and loading parameters here. The original snapshot remains unchanged; create a new short link to share revisions.",
+              )}
+            </span>
+          </div>
+        ) : null}
+        {initialShareId && shareLoadState === "error" ? (
+          <div className="mixed-error">
+            <b>{tr("共享方案无法打开", "SHARED PLAN UNAVAILABLE")}</b>
+            <span>{shareError}</span>
+          </div>
+        ) : null}
+        {shareOpen ? (
+          <div className="mixed-share-panel panel">
+            <div>
+              <b>{tr("创建稳定短链接", "CREATE STABLE SHORT LINK")}</b>
+              <span>
+                {tr(
+                  "保存当前已验证方案的只读快照；接收人打开后可本地调整并另存新链接。",
+                  "Save an immutable snapshot of the verified plan; recipients can edit a local copy and create a new link.",
+                )}
+              </span>
+            </div>
+            <label>
+              {tr("有效期", "Validity")}
+              <select
+                value={shareExpiryDays}
+                onChange={(event) => setShareExpiryDays(event.target.value)}
+              >
+                <option value="0">{tr("长期有效", "No expiry")}</option>
+                <option value="7">7 {tr("天", "days")}</option>
+                <option value="30">30 {tr("天", "days")}</option>
+                <option value="90">90 {tr("天", "days")}</option>
+                <option value="365">365 {tr("天", "days")}</option>
+              </select>
+            </label>
+            <label>
+              {tr("访问码（可选）", "Access code (optional)")}
+              <input
+                type="password"
+                minLength={4}
+                maxLength={64}
+                placeholder={tr("至少4位", "At least 4 characters")}
+                value={shareAccessCode}
+                onChange={(event) => setShareAccessCode(event.target.value)}
+              />
+            </label>
+            <button
+              className="primary"
+              disabled={
+                shareBusy ||
+                !reportReady ||
+                (shareAccessCode.length > 0 && shareAccessCode.length < 4)
+              }
+              onClick={() => void createSharedPlan()}
+            >
+              {shareBusy
+                ? tr("正在保存…", "Saving…")
+                : tr("生成并复制短链接", "Create & Copy Link")}
+            </button>
+            {shareUrl ? (
+              <div className="mixed-share-result">
+                <a href={shareUrl} target="_blank" rel="noreferrer">
+                  {shareUrl}
+                </a>
+                <button onClick={() => void copyShareUrl()}>
+                  {tr("复制", "Copy")}
+                </button>
+              </div>
+            ) : null}
+            {shareOpen && shareError ? (
+              <div className="mixed-error"><span>{shareError}</span></div>
+            ) : null}
           </div>
         ) : null}
 
@@ -856,6 +1537,50 @@ export default function MixedPlanner({
                   value={cartonGap}
                   onChange={(event) =>
                     setCartonGap(Math.max(0, Number(event.target.value)))
+                  }
+                />
+              </label>
+              <label>
+                {tr("托盘上箱隙 mm", "On-pallet carton gap mm")}
+                <input
+                  type="number"
+                  min="0"
+                  value={palletCartonGap}
+                  onChange={(event) =>
+                    setPalletCartonGap(Math.max(0, Number(event.target.value)))
+                  }
+                />
+              </label>
+              <label>
+                {tr("托盘间隙 mm", "Pallet-to-pallet gap mm")}
+                <input
+                  type="number"
+                  min="0"
+                  value={palletGap}
+                  onChange={(event) =>
+                    setPalletGap(Math.max(0, Number(event.target.value)))
+                  }
+                />
+              </label>
+              <label>
+                {tr("包膜 / 歪斜余量 mm/边", "Wrap / lean allowance mm/side")}
+                <input
+                  type="number"
+                  min="0"
+                  value={palletTolerance}
+                  onChange={(event) =>
+                    setPalletTolerance(Math.max(0, Number(event.target.value)))
+                  }
+                />
+              </label>
+              <label>
+                {tr("托盘安全退边 mm/边", "Pallet edge inset mm/side")}
+                <input
+                  type="number"
+                  min="0"
+                  value={edgeInset}
+                  onChange={(event) =>
+                    setEdgeInset(Math.max(0, Number(event.target.value)))
                   }
                 />
               </label>
@@ -1014,6 +1739,7 @@ export default function MixedPlanner({
               <thead>
                 <tr>
                   <th>#</th>
+                  <th>{tr("项次", "Item Group")}</th>
                   <th>{tr("系列", "Series")}</th>
                   <th>{tr("产品代码", "Product code")}</th>
                   <th>{tr("品名规格", "Product / specification")}</th>
@@ -1022,6 +1748,7 @@ export default function MixedPlanner({
                   <th>{tr("外箱尺寸 L×W×H", "Carton L×W×H")}</th>
                   <th>{tr("包装方式", "Packaging")}</th>
                   <th>{tr("托盘尺寸 L×W×H", "Pallet L×W×H")}</th>
+                  <th>{tr("允许外伸 mm/边", "Allowed overhang mm/side")}</th>
                   <th>{tr("总箱数", "Total cartons")}</th>
                   <th>{tr("CBM 材积", "Packaging CBM")}</th>
                   <th>{tr("尾箱数量", "Last-carton quantity")}</th>
@@ -1049,6 +1776,17 @@ export default function MixedPlanner({
                   return (
                     <tr key={row.id} className={boxes ? "valid-row" : ""}>
                       <td className="row-index">{index + 1}</td>
+                      <td>
+                        <input
+                          className="item-group-input"
+                          aria-label={tr("项次", "Item Group")}
+                          value={row.itemGroup}
+                          placeholder={tr("如 1", "e.g. 1")}
+                          onChange={(event) =>
+                            updateRow(row.id, { itemGroup: event.target.value })
+                          }
+                        />
+                      </td>
                       <td>
                         {inputMode === "material" ? (
                           <select
@@ -1204,44 +1942,29 @@ export default function MixedPlanner({
                         )}
                       </td>
                       <td>
-                        {inputMode === "material" ? (
-                          <span className="master-readonly">
-                            {row.code
-                              ? row.packaging === "pallet"
-                                ? tr("托盘", "Pallet")
-                                : tr("纸箱", "Carton")
-                              : "—"}
-                          </span>
-                        ) : (
-                          <select
-                            aria-label={tr("包装方式", "Packaging method")}
-                            value={row.packaging}
-                            onChange={(event) =>
-                              updateRow(row.id, {
-                                packaging:
-                                  event.target.value === "pallet"
-                                    ? "pallet"
-                                    : "carton",
-                              })
-                            }
-                          >
-                            <option value="carton">
-                              {tr("纸箱", "Carton")}
-                            </option>
-                            <option value="pallet">
-                              {tr("托盘", "Pallet")}
-                            </option>
-                          </select>
-                        )}
+                        <select
+                          aria-label={tr("包装方式", "Packaging method")}
+                          value={row.packaging}
+                          disabled={inputMode === "material" && !row.code}
+                          onChange={(event) =>
+                            updateRow(row.id, {
+                              packaging:
+                                event.target.value === "pallet"
+                                  ? "pallet"
+                                  : "carton",
+                            })
+                          }
+                        >
+                          <option value="carton">
+                            {tr("纸箱", "Carton")}
+                          </option>
+                          <option value="pallet">
+                            {tr("托盘", "Pallet")}
+                          </option>
+                        </select>
                       </td>
                       <td>
-                        {inputMode === "material" ? (
-                          <span className="master-readonly numeric">
-                            {row.code && row.packaging === "pallet"
-                              ? `${row.palletL} × ${row.palletW} × ${row.palletH} mm`
-                              : "—"}
-                          </span>
-                        ) : row.packaging === "pallet" ? (
+                        {row.packaging === "pallet" ? (
                           <div className="mixed-dimensions">
                             {(["palletL", "palletW", "palletH"] as const).map(
                               (key, dimensionIndex) => (
@@ -1266,6 +1989,31 @@ export default function MixedPlanner({
                               ),
                             )}
                           </div>
+                        ) : (
+                          <span className="not-applicable">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {row.packaging === "pallet" ? (
+                          <input
+                            className="pallet-overhang-input"
+                            aria-label={tr(
+                              "纸箱允许超出托盘边界毫米/边",
+                              "Allowed carton overhang beyond pallet mm per side",
+                            )}
+                            type="number"
+                            min="0"
+                            max="200"
+                            value={row.palletOverhang}
+                            onChange={(event) =>
+                              updateRow(row.id, {
+                                palletOverhang:
+                                  event.target.value === ""
+                                    ? ""
+                                    : Math.max(0, Math.min(200, Number(event.target.value))),
+                              })
+                            }
+                          />
                         ) : (
                           <span className="not-applicable">—</span>
                         )}
@@ -1313,11 +2061,368 @@ export default function MixedPlanner({
           </div>
           <p className="mixed-grid-note">
             {tr(
-              "系统锁定计算总箱数与尾箱数量；尾箱按完整箱位、置顶固定、禁止受压。",
-              "Total cartons and partial-carton quantity are system-calculated. A partial carton reserves one full position and is secured on top without load above.",
+              "相同项次代表一个齐套组，组内产品数量（PCS）必须一致；系统锁定计算箱数与尾箱，尾箱按完整箱位、置顶固定、禁止受压。",
+              "Rows with the same Item Group form one kit and must have equal product quantity (PCS). Cartons and partial cartons are system-calculated; a partial carton reserves one full top position without load above.",
             )}
           </p>
+          {rows.some((row) => row.packaging === "pallet") ? (
+            <div className="mixed-pallet-policy">
+              <b>{tr("托盘边界规则", "PALLET BOUNDARY RULE")}</b>
+              <span>
+                {tr(
+                  `托盘尺寸按实际值；默认外伸 0 mm/边。纸箱先按 ${palletCartonGap} mm 箱隙、${edgeInset} mm/边安全退边排托，再按 ${palletTolerance} mm/边包膜/歪斜余量形成装柜外廓；托盘之间保留 ${palletGap} mm。`,
+                  `Use measured pallet dimensions; default overhang is 0 mm/side. Cartons are palletized with ${palletCartonGap} mm gaps and ${edgeInset} mm/side inset; ${palletTolerance} mm/side wrap/lean allowance forms the loading envelope, with ${palletGap} mm between pallets.`,
+                )}
+              </span>
+              {rows.some(
+                (row) =>
+                  row.packaging === "pallet" && Number(row.palletOverhang) > 0,
+              ) ? (
+                <em>
+                  {tr(
+                    "存在用户授权外伸值；报告将按扩大后的实际货物外廓计算，执行前须确认纸箱抗压、包膜和托盘承载。",
+                    "User-authorized overhang is present. The report uses the enlarged cargo envelope; confirm carton compression, wrapping and pallet capacity before execution.",
+                  )}
+                </em>
+              ) : null}
+            </div>
+          ) : null}
+          {!kitAssignmentPreflight.ok ? (
+            <div className="mixed-error kit-assignment-error">
+              <b>{tr("齐套校验未通过", "KIT VALIDATION FAILED")}</b>
+              <span>
+                {kitAssignmentPreflight.errors.map(kitMessage).join("；")}
+              </span>
+            </div>
+          ) : null}
         </div>
+
+        <section className="kit-optimizer panel" aria-labelledby="kit-title">
+          <div className="mixed-section-heading kit-heading">
+            <div>
+              <p className="section-kicker">02 · KIT OPTIMIZER</p>
+              <h3 id="kit-title">
+                {tr(
+                  "齐套项次 · 多 SKU 采购组合推荐",
+                  "Item Group · Multi-SKU Purchase Recommendations",
+                )}
+              </h3>
+            </div>
+            {currentAppliedKit ? (
+              <span className="kit-applied-badge">
+                {tr(
+                  `已采用方案 ${currentAppliedKit.recommendation.rank}`,
+                  `Recommendation ${currentAppliedKit.recommendation.rank} applied`,
+                )}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="kit-control-row">
+            <label>
+              {tr("柜型", "Container")}
+              <strong>{containerType}</strong>
+            </label>
+            <label>
+              {tr("集装箱数量", "No. of containers")}
+              <input
+                aria-label={tr("集装箱数量", "Number of containers")}
+                type="number"
+                min="1"
+                max="100"
+                value={kitContainerCount}
+                onChange={(event) =>
+                  setKitContainerCount(
+                    Math.max(1, Math.min(100, Math.floor(Number(event.target.value) || 1))),
+                  )
+                }
+              />
+            </label>
+            <label>
+              {tr("推荐模式", "Recommendation mode")}
+              <select
+                value={kitMode}
+                onChange={(event) =>
+                  setKitMode(
+                    event.target.value as
+                      | "utilization"
+                      | "procurement"
+                      | "balanced",
+                  )
+                }
+              >
+                <option value="utilization">
+                  {tr("最大装载率", "Maximum Utilization")}
+                </option>
+                <option value="procurement">
+                  {tr("最大采购数量", "Maximum Procurement Qty")}
+                </option>
+                <option value="balanced">
+                  {tr("目标比例均衡", "Balanced Mix")}
+                </option>
+              </select>
+            </label>
+            <label>
+              {tr("推荐数量", "Recommendations")}
+              <select
+                value={kitTopN}
+                onChange={(event) =>
+                  setKitTopN(Number(event.target.value) === 20 ? 20 : 10)
+                }
+              >
+                <option value="10">Top 10</option>
+                <option value="20">Top 20</option>
+              </select>
+            </label>
+            <button
+              className="primary kit-calculate"
+              disabled={kitBusy || kitItems.length === 0}
+              onClick={calculateKitRecommendations}
+            >
+              {kitBusy
+                ? tr("正在验柜…", "Verifying…")
+                : tr("计算并逐案验柜", "Calculate & Verify")}
+            </button>
+          </div>
+
+          <div className="kit-constraint-scroll">
+            <table className="kit-constraint-table">
+              <thead>
+                <tr>
+                  <th>{tr("项次", "Item Group")}</th>
+                  <th>SKU</th>
+                  <th>{tr("最小采购步长", "Minimum Qty Step")}</th>
+                  <th>{tr("最小数量", "Minimum Qty")}</th>
+                  <th>{tr("目标数量", "Target Qty")}</th>
+                  <th>{tr("最大数量", "Maximum Qty")}</th>
+                  <th>{tr("目标比例", "Target Mix")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {kitGroupDrafts.length ? (
+                  kitGroupDrafts.map((group) => (
+                    <tr key={group.id}>
+                      <td><b>{group.id}</b></td>
+                      <td title={group.members.map((item) => item.code || item.name).join(" · ")}>
+                        {group.members.length} SKU
+                        <small>
+                          {group.members.map((item) => item.code || item.name || "—").join(" · ")}
+                        </small>
+                      </td>
+                      <td>
+                        <b>{group.step ? `${formatNumber(group.step)} PCS` : "—"}</b>
+                        {group.error ? <small>{kitMessage(group.error)}</small> : null}
+                      </td>
+                      {(["min", "target", "max"] as const).map((key) => (
+                        <td key={key}>
+                          <input
+                            aria-label={`${group.id} ${key}`}
+                            type="number"
+                            min="0"
+                            step={group.step || 1}
+                            placeholder={tr("自动", "Auto")}
+                            value={kitConstraints[group.id]?.[key] ?? ""}
+                            onChange={(event) =>
+                              updateKitConstraint(
+                                group.id,
+                                key,
+                                event.target.value === ""
+                                  ? ""
+                                  : Math.max(0, Math.floor(Number(event.target.value))),
+                              )
+                            }
+                          />
+                        </td>
+                      ))}
+                      <td>
+                        <div className="kit-ratio-input">
+                          <input
+                            aria-label={`${group.id} ratio`}
+                            type="number"
+                            min="0"
+                            max="100"
+                            placeholder={tr("等比", "Equal")}
+                            value={kitConstraints[group.id]?.ratio ?? ""}
+                            onChange={(event) =>
+                              updateKitConstraint(
+                                group.id,
+                                "ratio",
+                                event.target.value === ""
+                                  ? ""
+                                  : Math.max(0, Math.min(100, Number(event.target.value))),
+                              )
+                            }
+                          />
+                          <span>%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="kit-empty-row">
+                      {tr(
+                        "请在产品清单填写项次与完整包装参数。",
+                        "Enter Item Group and complete packaging data in the product grid.",
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {kitCalculation && !currentKitCalculation ? (
+            <div className="kit-stale-note">
+              {tr(
+                "输入或约束已变化，请重新计算推荐方案。",
+                "Inputs or constraints changed; recalculate recommendations.",
+              )}
+            </div>
+          ) : null}
+          {currentKitCalculation?.errors.length ? (
+            <div className="mixed-error kit-error">
+              <b>{tr("无可行组合", "NO FEASIBLE COMBINATION")}</b>
+              <span>
+                {currentKitCalculation.errors.map(kitMessage).join("；")}
+              </span>
+            </div>
+          ) : null}
+          {currentKitCalculation?.warnings.length ? (
+            <div className="kit-warning">
+              {currentKitCalculation.warnings.map(kitMessage).join("；")}
+            </div>
+          ) : null}
+
+          {currentKitCalculation?.recommendations.length ? (
+            <div className="kit-results">
+              <div className="kit-result-meta">
+                <b>
+                  {tr(
+                    `${containerType} × ${kitContainerCount} · ${currentKitCalculation.recommendations.length} 个已验证方案`,
+                    `${containerType} × ${kitContainerCount} · ${currentKitCalculation.recommendations.length} verified plans`,
+                  )}
+                </b>
+                <span>
+                  {tr(
+                    `整数搜索 ${currentKitCalculation.searchStrategy} · 真实排箱复核 ${currentKitCalculation.actualAudits ?? 0} 案`,
+                    `Integer search ${currentKitCalculation.searchStrategy} · ${currentKitCalculation.actualAudits ?? 0} physical plans audited`,
+                  )}
+                </span>
+              </div>
+              <div className="kit-recommendation-scroll">
+                <table className="kit-recommendation-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      {currentKitCalculation.groups.map((group) => (
+                        <th key={group.id}>{tr(`项次 ${group.id}`, `Group ${group.id}`)}</th>
+                      ))}
+                      <th>{tr("总箱数", "Total CTN")}</th>
+                      <th>CBM</th>
+                      <th>{tr("实际柜数", "Containers")}</th>
+                      <th>{tr("装载率", "Utilization")}</th>
+                      {kitMode === "balanced" ? <th>{tr("比例偏差", "Mix deviation")}</th> : null}
+                      <th>{tr("操作", "Action")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {currentKitCalculation.recommendations.map((recommendation) => (
+                      <tr
+                        key={recommendation.rank}
+                        className={
+                          currentAppliedKit?.recommendation.rank === recommendation.rank
+                            ? "applied"
+                            : ""
+                        }
+                      >
+                        <td><b>{String(recommendation.rank).padStart(2, "0")}</b></td>
+                        {currentKitCalculation.groups.map((group) => (
+                          <td key={group.id}>
+                            <b>{formatNumber(recommendation.groupQuantities[group.id])}</b>
+                            <small>PCS · {formatNumber(recommendation.groupQuantities[group.id] / group.step)} steps</small>
+                          </td>
+                        ))}
+                        <td>{formatNumber(recommendation.totalCartons)} CTN</td>
+                        <td>{formatNumber(recommendation.totalCbm, 2)}</td>
+                        <td>{recommendation.containersUsed} / {recommendation.requestedContainers}</td>
+                        <td><strong>{formatNumber(recommendation.utilization, 1)}%</strong></td>
+                        {kitMode === "balanced" ? (
+                          <td>{formatNumber(recommendation.ratioDeviation * 100, 1)}%</td>
+                        ) : null}
+                        <td>
+                          <div className="kit-row-actions">
+                            <button
+                              onClick={() =>
+                                setExpandedKitRank(
+                                  expandedKitRank === recommendation.rank
+                                    ? null
+                                    : recommendation.rank,
+                                )
+                              }
+                            >
+                              {expandedKitRank === recommendation.rank
+                                ? tr("收起", "Close")
+                                : tr("明细", "Details")}
+                            </button>
+                            <button
+                              className="primary"
+                              onClick={() => applyKitRecommendation(recommendation)}
+                            >
+                              {tr("采用", "Apply")}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {expandedKitRank ? (() => {
+                const recommendation = currentKitCalculation.recommendations.find(
+                  (entry) => entry.rank === expandedKitRank,
+                );
+                if (!recommendation) return null;
+                return (
+                  <div className="kit-detail-grid">
+                    {currentKitCalculation.groups.map((group) => {
+                      const requirement = recommendation.groupRequirements[group.id];
+                      return (
+                        <article key={group.id}>
+                          <header>
+                            <b>{tr(`项次 ${group.id}`, `Item Group ${group.id}`)}</b>
+                            <strong>{formatNumber(requirement.quantity)} PCS</strong>
+                            <span>LCM {formatNumber(group.step)} PCS</span>
+                          </header>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>SKU</th>
+                                <th>PCS</th>
+                                <th>CTN</th>
+                                <th>CBM</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {requirement.skuDetails.map((detail) => (
+                                <tr key={detail.id}>
+                                  <td><b>{detail.code || "—"}</b><span>{detail.name}</span></td>
+                                  <td>{formatNumber(detail.quantity)}</td>
+                                  <td>{formatNumber(detail.cartons)}</td>
+                                  <td>{formatNumber(detail.cbm, 3)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </article>
+                      );
+                    })}
+                  </div>
+                );
+              })() : null}
+            </div>
+          ) : null}
+        </section>
 
         <div className="mixed-summary-grid">
           <article>
@@ -1459,6 +2564,7 @@ export default function MixedPlanner({
                 <thead>
                   <tr>
                     <th>{tr("装柜顺序", "Sequence")}</th>
+                    <th>{tr("项次", "Item Group")}</th>
                     <th>{tr("系列", "Series")}</th>
                     <th>
                       {tr(
@@ -1480,6 +2586,7 @@ export default function MixedPlanner({
                   {selectedPlan.blocks.map((block, index) => (
                     <tr key={block.item.id}>
                       <td>{String(index + 1).padStart(2, "0")}</td>
+                      <td>{block.item.itemGroup || "—"}</td>
                       <td>{block.item.series || "—"}</td>
                       <td>
                         <b>{block.item.code || "—"}</b>
@@ -1533,6 +2640,32 @@ export default function MixedPlanner({
                 </tbody>
               </table>
             </div>
+            {selectedPlan.blocks.some(
+              (block) => block.item.packaging === "pallet",
+            ) ? (
+              <section className="pallet-pattern-section">
+                <div className="pallet-pattern-heading">
+                  <b>{tr("托盘排箱视图", "PALLET CARTON PATTERNS")}</b>
+                  <span>
+                    {tr(
+                      "实线为实际托盘，虚线为允许摆箱边界；0°/90°仅旋转纸箱底面。",
+                      "Solid line: actual pallet; dashed line: permitted carton boundary. 0°/90° rotates the carton base only.",
+                    )}
+                  </span>
+                </div>
+                <div className="pallet-pattern-grid">
+                  {selectedPlan.blocks
+                    .filter((block) => block.item.packaging === "pallet")
+                    .map((block) => (
+                      <PalletPatternView
+                        key={block.item.id}
+                        item={block.item}
+                        language={language}
+                      />
+                    ))}
+                </div>
+              </section>
+            ) : null}
           </div>
         ) : (
           <div className="mixed-empty panel">
@@ -1586,7 +2719,10 @@ export default function MixedPlanner({
             </div>
             <div>
               <dt>{tr("软件 / 算法", "Software / Algorithm")}</dt>
-              <dd>v{appVersion} / MIX 1.3</dd>
+              <dd>
+                v{appVersion} / MIX 1.4
+                {kitAssignmentPreflight.groupCount ? " · KIT 1.0" : ""}
+              </dd>
             </div>
             <div>
               <dt>{tr("状态", "Status")}</dt>
@@ -1656,10 +2792,77 @@ export default function MixedPlanner({
             {formatNumber(result.config.doorWidth)} ×{" "}
             {formatNumber(result.config.doorHeight)} mm
           </span>
+          {result.totalRequiredPallets ? (
+            <span>
+              {tr("托盘参数", "PALLET RULES")}：
+              {tr("箱隙", "CTN GAP")} {palletCartonGap} ·{" "}
+              {tr("托隙", "PLT GAP")} {palletGap} ·{" "}
+              {tr("退边/歪斜", "INSET/LEAN")} {edgeInset}/{palletTolerance} mm
+            </span>
+          ) : null}
         </div>
+        {currentAppliedKit ? (
+          <section className="report-section kit-selection-report">
+            <h2>
+              <span>01</span>
+              {tr(
+                "齐套采购组合与验柜结论",
+                "KIT PURCHASE COMBINATION & PHYSICAL VERIFICATION",
+              )}
+            </h2>
+            <div className="report-result-line">
+              <b>
+                {currentAppliedKit.containerType} × {currentAppliedKit.containerCount}
+              </b>
+              <span>
+                {tr("推荐方案", "RECOMMENDATION")} {currentAppliedKit.recommendation.rank}
+              </span>
+              <span>{formatNumber(currentAppliedKit.recommendation.totalCartons)} CTN</span>
+              <span>{formatNumber(currentAppliedKit.recommendation.totalCbm, 2)} CBM</span>
+              <span>
+                {tr("装载率", "UTILIZATION")} {formatNumber(currentAppliedKit.recommendation.utilization, 1)}%
+              </span>
+              <strong>
+                {tr("真实排箱复核：通过", "PHYSICAL LOADING AUDIT: PASS")}
+              </strong>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>{tr("项次", "Item Group")}</th>
+                  <th>{tr("齐套产品数量", "Kit quantity")}</th>
+                  <th>{tr("最小采购步长", "Minimum Qty Step")}</th>
+                  <th>SKU</th>
+                  <th>{tr("箱数", "CTN")}</th>
+                  <th>CBM</th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentAppliedKit.groups.map((group) => {
+                  const requirement =
+                    currentAppliedKit.recommendation.groupRequirements[group.id];
+                  return (
+                    <tr key={group.id}>
+                      <td><b>{group.id}</b></td>
+                      <td>{formatNumber(requirement.quantity)} PCS</td>
+                      <td>{formatNumber(group.step)} PCS</td>
+                      <td>
+                        {requirement.skuDetails
+                          .map((detail) => detail.code || detail.name)
+                          .join(" · ")}
+                      </td>
+                      <td>{formatNumber(requirement.cartons)}</td>
+                      <td>{formatNumber(requirement.cbm, 3)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </section>
+        ) : null}
         <section className="report-section mixed-input-report">
           <h2>
-            <span>01</span>
+            <span>{currentAppliedKit ? "02" : "01"}</span>
             {tr(
               "产品参数与系统换算",
               "PRODUCT PARAMETERS & SYSTEM CALCULATION",
@@ -1668,6 +2871,7 @@ export default function MixedPlanner({
           <table className="mixed-product-identity-table">
             <thead>
               <tr>
+                <th>{tr("项次", "Item Group")}</th>
                 <th>{tr("系列", "Series")}</th>
                 <th>{tr("产品代码", "Code")}</th>
                 <th>{tr("品名规格", "Product / specification")}</th>
@@ -1679,6 +2883,7 @@ export default function MixedPlanner({
             <tbody>
               {validItems.map((item) => (
                 <tr key={item.id}>
+                  <td>{item.itemGroup || "—"}</td>
                   <td>{item.series || "—"}</td>
                   <td>{item.code || "—"}</td>
                   <td>{item.name || "—"}</td>
@@ -1701,6 +2906,7 @@ export default function MixedPlanner({
                 <th>{tr("外箱 L×W×H", "Carton L×W×H")}</th>
                 <th>{tr("包装方式", "Packaging")}</th>
                 <th>{tr("托盘 L×W×H", "Pallet L×W×H")}</th>
+                <th>{tr("托盘边界 / 装柜外廓", "Pallet boundary / loading envelope")}</th>
                 <th>{tr("CBM 材积", "Packaging CBM")}</th>
                 <th>{tr("尾箱数量", "Last-carton quantity")}</th>
               </tr>
@@ -1726,6 +2932,11 @@ export default function MixedPlanner({
                         : "—"}
                     </td>
                     <td>
+                      {calculated?.packaging === "pallet"
+                        ? `${calculated.palletPlan.overhang > 0 ? `${tr("外伸", "overhang")} ${calculated.palletPlan.overhang}` : `${tr("退边", "inset")} ${calculated.palletPlan.edgeInset}`} mm/side · ${formatNumber(calculated.loadingUnit.l)} × ${formatNumber(calculated.loadingUnit.w)} mm`
+                        : "—"}
+                    </td>
+                    <td>
                       {formatNumber(calculated?.requiredVolumeCbm ?? 0, 2)} CBM
                     </td>
                     <td>
@@ -1738,6 +2949,30 @@ export default function MixedPlanner({
               })}
             </tbody>
           </table>
+          {result.items.some((item) => item.packaging === "pallet") ? (
+            <section className="pallet-pattern-section report-pallet-patterns">
+              <div className="pallet-pattern-heading">
+                <b>{tr("托盘排箱视图", "PALLET CARTON PATTERNS")}</b>
+                <span>
+                  {tr(
+                    "实线为实际托盘；虚线为经退边/外伸规则计算后的允许摆箱边界。",
+                    "Solid line is the measured pallet; dashed line is the permitted carton boundary after inset/overhang rules.",
+                  )}
+                </span>
+              </div>
+              <div className="pallet-pattern-grid">
+                {result.items
+                  .filter((item) => item.packaging === "pallet")
+                  .map((item) => (
+                    <PalletPatternView
+                      key={item.id}
+                      item={item}
+                      language={language}
+                    />
+                  ))}
+              </div>
+            </section>
+          ) : null}
         </section>
         {result.containers.map((plan, planIndex) => (
           <section
@@ -1745,7 +2980,9 @@ export default function MixedPlanner({
             key={plan.index}
           >
             <h2>
-              <span>{String(plan.index + 1).padStart(2, "0")}</span>
+              <span>
+                {String(plan.index + (currentAppliedKit ? 2 : 1)).padStart(2, "0")}
+              </span>
               {tr(
                 `第 ${plan.index} 柜 · 分区装载图`,
                 `CONTAINER ${plan.index} · ZONED LOADING PLAN`,
@@ -1806,10 +3043,17 @@ export default function MixedPlanner({
               doorClearance={doorClearance}
               language={language}
             />
-            <table className="mixed-report-allocation">
+            <table
+              className={`mixed-report-allocation${
+                planIndex === result.containers.length - 1
+                  ? " report-final-allocation"
+                  : ""
+              }`}
+            >
               <thead>
                 <tr>
                   <th>#</th>
+                  <th>{tr("项次", "Item Group")}</th>
                   <th>{tr("产品", "Product")}</th>
                   <th>{tr("包装", "Pack")}</th>
                   <th>{tr("箱数 / 产品数", "BOX / EA")}</th>
@@ -1823,6 +3067,7 @@ export default function MixedPlanner({
                 {plan.blocks.map((block, index) => (
                   <tr key={block.item.id}>
                     <td>{index + 1}</td>
+                    <td>{block.item.itemGroup || "—"}</td>
                     <td>
                       {block.item.code} · {block.item.name}
                     </td>
@@ -1926,6 +3171,16 @@ export default function MixedPlanner({
             </li>
           </ol>
         </section>
+        <div className="report-verification-grid mixed-verification-grid">
+          <span>{tr("□ 外箱与托盘实测尺寸已与报告逐项核对", "□ Measured carton and pallet dimensions checked against this report")}</span>
+          <span>{tr(`□ 柜内与门洞尺寸已复测（参考 ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm）`, `□ Container and door opening remeasured (reference ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm)`)}</span>
+          <span>{tr("□ 项次、SKU、BOX、EA 与装柜清单一致", "□ Item Groups, SKUs, BOX and EA agree with the loading list")}</span>
+          <span>{tr("□ 托盘边界、层数、总高与缠膜余量已复核", "□ Pallet boundary, layers, loaded height and wrap allowance verified")}</span>
+          <span>{tr("□ 尾箱已填充、封签、标注 EA 并置于区末最上层", "□ Partial cartons filled, sealed, EA-marked and secured on top at zone end")}</span>
+          <span>{tr("□ 空隙挡固、填充、支撑/系固方案已落实", "□ Void blocking, filling, bracing/securing plan implemented")}</span>
+          <span>{tr("□ 总载重、轴载、重心与纸箱抗压已由责任人员确认", "□ Payload, axle load, centre of gravity and carton compression approved")}</span>
+          <span>{tr("□ 柜号、封条号与现场照片已归档", "□ Container number, seal number and loading photos archived")}</span>
+        </div>
         <footer className="report-signoff">
           <div>
             {tr("制表：", "Prepared by:")}
