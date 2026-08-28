@@ -55,8 +55,15 @@ test("offers manual and cascading Megee-material entry for mixed loads", async (
   assert.match(source, /托盘 L×W×H \/ 外伸/);
   assert.match(source, /className="inline-dimensions"/);
   assert.match(source, /LONGITUDINAL SIDE VIEW/);
-  assert.match(source, /TRUE TRANSVERSE SECTIONS/);
+  assert.match(source, /END VIEW/);
   assert.match(source, /PALLET CARTON PATTERNS/);
+  assert.match(source, /Packing List PDF/);
+  assert.match(source, /packing-list-print/);
+  assert.match(source, /print-packing-list/);
+  assert.match(source, /PRODUCT PACKING DETAILS/);
+  assert.match(source, /CONTAINER ALLOCATION/);
+  assert.match(source, /Packing List totals do not match the loading result/);
+  assert.match(source, /preserveAspectRatio="none"/);
   assert.match(source, /products\.filter\(\s*\(product\) => product\.family === row\.series,?\s*\)/);
   assert.match(source, /CBM 材积/);
   assert.match(source, /validateMixedPlan/);
@@ -71,13 +78,29 @@ test("offers manual and cascading Megee-material entry for mixed loads", async (
   assert.doesNotMatch(source, /mailto:|location\.search.*rows|URLSearchParams.*rows/);
 });
 
+test("uses the supplied Megee logo in the app and formal reports", async () => {
+  const logo = await readFile(new URL("../public/megee-logo.jpg", import.meta.url));
+  const component = await readFile(new URL("../app/MegeeLogo.tsx", import.meta.url), "utf8");
+  const planner = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
+  assert.ok(logo.byteLength > 100_000);
+  assert.match(component, /MEGEE COSPACK/);
+  assert.match(component, /megee-logo\.jpg/);
+  assert.match(planner, /<MegeeLogo compact className="brand-mark"/);
+  assert.match(planner, /<MegeeLogo className="report-brand-logo"/);
+});
+
 test("keeps formal PDF pagination rules explicit", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /thead\s*\{\s*display:\s*table-header-group/);
   assert.match(styles, /mixed-plan-scroll[^}]*break-inside:\s*avoid-page/);
-  assert.match(styles, /mixed-cross-row[^}]*break-inside:\s*avoid-page/);
   assert.match(styles, /mixed-side-view[^}]*break-inside:\s*avoid-page/);
-  assert.match(styles, /report-execution-record[^}]*min-height:\s*258mm/);
+  assert.match(styles, /mixed-end-view[^}]*break-inside:\s*avoid-page/);
+  assert.match(styles, /@page packing-list\s*{[^}]*size:\s*A4 landscape/);
+  assert.match(styles, /packing-list-section thead\s*{\s*display:\s*table-header-group/);
+  assert.match(styles, /packing-list-section tr\s*{[^}]*break-inside:\s*avoid-page/);
+  assert.match(styles, /body\.print-packing-list \.print-report:not\(\.packing-list-print\)/);
+  assert.match(styles, /report-execution-record[^}]*min-height:\s*0/);
+  assert.match(styles, /report-execution-notes[^}]*min-height:\s*32mm/);
 });
 
 test("ships the standard import template without a public product snapshot", async () => {

@@ -7,6 +7,7 @@ import {
   planMixedContainers,
   validateMixedPlan,
 } from "../lib/mixedPacking.js";
+import MegeeLogo from "./MegeeLogo";
 
 type Dimensions = {
   l: number;
@@ -281,7 +282,7 @@ function PalletPatternView({
   );
 }
 
-function MixedCrossSections({
+function MixedEndView({
   plan,
   container,
   sideClearance,
@@ -301,10 +302,11 @@ function MixedCrossSections({
       ]),
     ),
   ].sort((a, b) => a - b);
-  const diagrams: Array<{
-    signature: string;
+  const sections: Array<{
+    startX: number;
+    endX: number;
     positions: typeof plan.positions;
-    ranges: Array<{ startX: number; endX: number }>;
+    occupiedArea: number;
   }> = [];
   boundaries.slice(0, -1).forEach((startX, index) => {
     const endX = boundaries[index + 1];
@@ -321,222 +323,118 @@ function MixedCrossSections({
           a.y - b.y || a.h - b.h || a.skuId.localeCompare(b.skuId),
       );
     if (!positions.length) return;
-    const signature = positions
-      .map(
-        (position) =>
-          `${position.skuId}-${position.y}-${position.h}-${position.stackBoxes}-${position.rotated}-${Boolean(position.partialCartonEa)}`,
-      )
-      .join("|");
-    const matching = diagrams.find(
-      (pattern) => pattern.signature === signature,
-    );
-    if (matching) {
-      const previousRange = matching.ranges.at(-1);
-      if (previousRange && Math.abs(previousRange.endX - startX) < 0.01)
-        previousRange.endX = endX;
-      else matching.ranges.push({ startX, endX });
-    } else {
-      diagrams.push({
-        signature,
-        positions,
-        ranges: [{ startX, endX }],
-      });
-    }
+    const occupiedArea = positions.reduce((sum, position) => {
+      const block = plan.blocks.find((entry) => entry.item.id === position.skuId);
+      return sum + position.h * position.stackBoxes * (block?.item.loadingUnit.h ?? 0);
+    }, 0);
+    sections.push({ startX, endX, positions, occupiedArea });
   });
+  const section = sections.sort(
+    (left, right) =>
+      right.occupiedArea - left.occupiedArea ||
+      right.positions.length - left.positions.length ||
+      right.startX - left.startX,
+  )[0];
+  if (!section) return null;
   return (
-    <div className="mixed-cross-section-wrap">
+    <section className="mixed-end-view" aria-label={isEnglish ? "Container end view" : "集装箱端视图"}>
       <h4>
-        <b>{isEnglish ? "TRUE TRANSVERSE SECTIONS" : "真实横向剖面"}</b>
+        <b>{isEnglish ? "END VIEW" : "端视图"}</b>
         <span>
           {isEnglish
-            ? "· calculated at every footprint change"
-            : "· 按平面排布变化位置逐段计算"}
+            ? "View from the door · fullest actual section"
+            : "从箱门向箱头看 · 实际最满断面"}
         </span>
       </h4>
-      <div className="mixed-cross-section-grid">
-        {Array.from(
-          { length: Math.ceil(diagrams.length / 4) },
-          (_, rowIndex) => (
-            <div className="mixed-cross-row" key={`cross-row-${rowIndex}`}>
-              {rowIndex === 0 ? (
-                <div className="mixed-cross-row-title">
-                  <b>{isEnglish ? "TRUE TRANSVERSE END VIEWS" : "真实横向端视图"}</b>
-                  <span>
-                    {isEnglish
-                      ? "Calculated at every footprint change"
-                      : "按平面排布变化位置逐段计算"}
-                  </span>
-                </div>
-              ) : null}
-              {diagrams
-                .slice(rowIndex * 4, rowIndex * 4 + 4)
-                .map((diagram, localIndex) => {
-          const diagramIndex = rowIndex * 4 + localIndex;
-          const skuCodes = [
-            ...new Set(
-              diagram.positions.map((position) => {
-                const block = plan.blocks.find(
-                  (entry) => entry.item.id === position.skuId,
-                );
-                return block?.item.code || block?.item.name || position.skuId;
-              }),
-            ),
-          ];
-          const maximumLevels = Math.max(
-            ...diagram.positions.map((position) => position.stackBoxes),
-          );
+      <svg
+        className="mixed-end-frame"
+        viewBox={`0 0 ${container.w} ${container.h}`}
+        role="img"
+        aria-label={isEnglish ? "Fullest real container end section" : "集装箱实际最满端面"}
+      >
+        <defs>
+          <pattern id={`end-tail-${plan.index}`} width="70" height="70" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="34" height="70" fill="#d3362d" opacity=".7" />
+          </pattern>
+        </defs>
+        <rect width={container.w} height={container.h} fill="#eef2f4" />
+        {section.positions.map((position, index) => {
+          const blockIndex = plan.blocks.findIndex((entry) => entry.item.id === position.skuId);
+          const block = plan.blocks[blockIndex];
+          if (!block) return null;
+          const color = COLORS[Math.max(0, blockIndex) % COLORS.length];
+          const unitHeight = block.item.loadingUnit.h;
+          const stackHeight = position.stackBoxes * unitHeight;
+          const top = container.h - stackHeight;
+          const label = block.item.code || block.item.name || position.skuId;
           return (
-            <article key={`${diagram.signature}-${diagramIndex}`}>
-              <div className="mixed-cross-meta">
-                <b>
-                  S{diagramIndex + 1} · {skuCodes.join(" + ")}
-                </b>
-                <span>
-                  {isEnglish ? "RANGES" : "覆盖"} {diagram.ranges.length}{" "}
-                  {isEnglish ? "·" : "段 ·"}{" "}
-                  {formatNumber(
-                    diagram.ranges.reduce(
-                      (sum, range) => sum + range.endX - range.startX,
-                      0,
-                    ),
-                  )}{" "}
-                  mm · {maximumLevels} {isEnglish ? "levels max." : "层（最高）"}
-                </span>
-              </div>
-              <svg
-                className="mixed-cross-frame"
-                viewBox={`0 0 ${container.w} ${container.h}`}
-                role="img"
-                aria-label={
-                  isEnglish
-                    ? `Combined transverse stack for ${skuCodes.join(" and ")}`
-                    : `${skuCodes.join(" 与 ")} 合并横向堆叠`
-                }
-              >
-                <defs>
-                  <pattern
-                    id={`tail-${diagramIndex}`}
-                    width="70"
-                    height="70"
-                    patternUnits="userSpaceOnUse"
-                    patternTransform="rotate(45)"
-                  >
-                    <rect width="34" height="70" fill="#d3362d" opacity=".7" />
-                  </pattern>
-                </defs>
-                <rect
-                  x="0"
-                  y="0"
-                  width={container.w}
-                  height={container.h}
-                  fill="#eef2f4"
+            <g key={`${position.y}-${position.skuId}-${index}`}>
+              <rect
+                x={position.y + sideClearance}
+                y={top}
+                width={position.h}
+                height={stackHeight}
+                fill={color}
+                fillOpacity=".22"
+                stroke={color}
+                strokeWidth="10"
+              />
+              {Array.from({ length: Math.max(0, position.stackBoxes - 1) }, (_, layer) => (
+                <line
+                  key={layer}
+                  x1={position.y + sideClearance}
+                  x2={position.y + sideClearance + position.h}
+                  y1={top + (layer + 1) * unitHeight}
+                  y2={top + (layer + 1) * unitHeight}
+                  stroke={color}
+                  strokeWidth="7"
                 />
-                {diagram.positions.map((position, index) => {
-                  const blockIndex = plan.blocks.findIndex(
-                    (entry) => entry.item.id === position.skuId,
-                  );
-                  const block = plan.blocks[blockIndex];
-                  if (!block) return null;
-                  const color = COLORS[blockIndex % COLORS.length];
-                  const effectiveHeight = block.item.loadingUnit.h;
-                  const stackHeight = position.stackBoxes * effectiveHeight;
-                  const top = container.h - stackHeight;
-                  return (
-                    <g key={`${position.y}-${index}`}>
-                      <rect
-                        x={position.y + sideClearance}
-                        y={top}
-                        width={position.h}
-                        height={stackHeight}
-                        fill={color}
-                        fillOpacity=".22"
-                        stroke={color}
-                        strokeWidth="10"
-                      />
-                      {Array.from(
-                        { length: Math.max(0, position.stackBoxes - 1) },
-                        (_, layer) => (
-                          <line
-                            key={layer}
-                            x1={position.y + sideClearance}
-                            x2={position.y + sideClearance + position.h}
-                            y1={top + (layer + 1) * effectiveHeight}
-                            y2={top + (layer + 1) * effectiveHeight}
-                            stroke={color}
-                            strokeWidth="7"
-                          />
-                        ),
-                      )}
-                      {position.partialCartonEa ? (
-                        <>
-                          <rect
-                            x={position.y + sideClearance}
-                            y={top}
-                            width={position.h}
-                            height={effectiveHeight}
-                            fill={`url(#tail-${diagramIndex})`}
-                            stroke="#c93228"
-                            strokeWidth="14"
-                          />
-                          <text
-                            x={position.y + sideClearance + position.h / 2}
-                            y={top + effectiveHeight * 0.58}
-                            textAnchor="middle"
-                            fill="#fff"
-                            fontSize="105"
-                            fontWeight="800"
-                          >
-                            {isEnglish ? "TAIL" : "尾"}{" "}
-                            {position.partialCartonEa} EA
-                          </text>
-                        </>
-                      ) : null}
-                      {position.stackBoxes > 1 || !position.partialCartonEa ? (
-                        <text
-                          x={position.y + sideClearance + position.h / 2}
-                          y={
-                            position.partialCartonEa
-                              ? top +
-                                effectiveHeight +
-                                (stackHeight - effectiveHeight) / 2
-                              : top + stackHeight / 2
-                          }
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                          fill="#27485f"
-                          fontSize="100"
-                          fontWeight="800"
-                        >
-                          ×{position.stackBoxes}
-                        </text>
-                      ) : null}
-                    </g>
-                  );
-                })}
-              </svg>
-              <p>
-                {skuCodes.length} SKU ·{" "}
-                {[
-                  ...new Set(
-                    diagram.positions.map((position) =>
-                      position.rotated ? "90°" : "0°",
-                    ),
-                  ),
-                ].join("+")}{" "}
-                · {diagram.positions.length}{" "}
-                {isEnglish ? "positions across width" : "个横向装载位"}
-                {diagram.positions.some((position) => position.partialCartonEa)
-                  ? ` · ${isEnglish ? "partial carton secured at top" : "尾箱置顶固定"}`
-                  : ""}
-              </p>
-            </article>
+              ))}
+              {position.partialCartonEa ? (
+                <rect
+                  x={position.y + sideClearance}
+                  y={top}
+                  width={position.h}
+                  height={unitHeight}
+                  fill={`url(#end-tail-${plan.index})`}
+                  stroke="#c93228"
+                  strokeWidth="12"
+                />
+              ) : null}
+              <text
+                x={position.y + sideClearance + position.h / 2}
+                y={top + stackHeight * 0.45}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill="#17364c"
+                fontSize="60"
+                fontWeight="800"
+              >
+                {label}
+              </text>
+              <text
+                x={position.y + sideClearance + position.h / 2}
+                y={top + stackHeight * 0.64}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fill="#466477"
+                fontSize="52"
+                fontWeight="700"
+              >
+                ×{position.stackBoxes} {position.packaging === "pallet" ? "PLT" : "BOX"}
+              </text>
+            </g>
           );
-                })}
-            </div>
-          ),
-        )}
+        })}
+      </svg>
+      <div className="mixed-end-note">
+        <b>{isEnglish ? "DOOR → FRONT" : "箱门 → 箱头"}</b>
+        <span>
+          {isEnglish ? "Actual section at" : "实际断面位置"}{" "}
+          {formatNumber(section.startX)}–{formatNumber(section.endX)} mm
+        </span>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -637,6 +535,7 @@ function MixedSideView({
         <svg
           className="mixed-side-frame"
           viewBox={`0 0 ${container.l} ${container.h}`}
+          preserveAspectRatio="none"
           role="img"
           aria-label={
             isEnglish
@@ -921,13 +820,27 @@ function MixedPlanCanvas({
           </span>
         ))}
       </div>
+      <div className="mixed-view-key">
+        <span>
+          <i className="occupied" />
+          {isEnglish
+            ? "Each coloured cell is one floor position; ×N is the vertical stack."
+            : "每个彩色格代表 1 个落地位；×N 表示向上堆叠数量。"}
+        </span>
+        <span>
+          <i className="empty" />
+          {isEnglish
+            ? "Blank area is real unused space caused by whole-unit dimensions, clearance and order quantity."
+            : "空白为真实未占用空间，由整箱/整托尺寸、间隙及订单数量共同产生。"}
+        </span>
+      </div>
       <MixedSideView
         plan={plan}
         container={container}
         doorClearance={doorClearance}
         language={language}
       />
-      <MixedCrossSections
+      <MixedEndView
         plan={plan}
         container={container}
         sideClearance={sideClearance}
@@ -971,13 +884,8 @@ export default function MixedPlanner({
   const [palletGap, setPalletGap] = useState(20);
   const [palletTolerance, setPalletTolerance] = useState(10);
   const [edgeInset, setEdgeInset] = useState(10);
-  const [allowSkuInterlock, setAllowSkuInterlock] = useState(true);
-  const [layoutStrategy, setLayoutStrategy] = useState<
-    "maximum" | "entered-order" | "clear-zones"
-  >("maximum");
-  const [confirmedLayoutStrategy, setConfirmedLayoutStrategy] = useState<
-    "maximum" | "entered-order" | "clear-zones"
-  >("maximum");
+  const allowSkuInterlock = true;
+  const layoutStrategy = "maximum" as const;
   const [activeContainer, setActiveContainer] = useState(0);
   const [printError, setPrintError] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
@@ -1015,15 +923,6 @@ export default function MixedPlanner({
     if (Number.isFinite(config.palletGap)) setPalletGap(Number(config.palletGap));
     if (Number.isFinite(config.palletTolerance)) setPalletTolerance(Number(config.palletTolerance));
     if (Number.isFinite(config.edgeInset)) setEdgeInset(Number(config.edgeInset));
-    if (typeof config.allowSkuInterlock === "boolean") setAllowSkuInterlock(config.allowSkuInterlock);
-    if (["maximum", "entered-order", "clear-zones"].includes(String(config.layoutStrategy))) {
-      const strategy = config.layoutStrategy as "maximum" | "entered-order" | "clear-zones";
-      setLayoutStrategy(strategy);
-      setConfirmedLayoutStrategy(strategy);
-    } else {
-      setLayoutStrategy("maximum");
-      setConfirmedLayoutStrategy("maximum");
-    }
     setActiveContainer(0);
   }, [containers]);
 
@@ -1165,8 +1064,7 @@ export default function MixedPlanner({
   const reportReady =
     validItems.length > 0 &&
     incompleteRows.length === 0 &&
-    preflight.ok &&
-    layoutStrategy === confirmedLayoutStrategy;
+    preflight.ok;
   const selectedPlan =
     result.containers[
       Math.min(activeContainer, Math.max(0, result.containers.length - 1))
@@ -1181,6 +1079,7 @@ export default function MixedPlanner({
     timeZone: "Asia/Shanghai",
   }).format(new Date());
   const reportNumber = `MIX-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`;
+  const packingListNumber = `PL-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`;
   const seriesOptions = useMemo(
     () =>
       [
@@ -1262,6 +1161,22 @@ export default function MixedPlanner({
     if (!shareUrl) return;
     await navigator.clipboard?.writeText(shareUrl);
   };
+  const runPrintMode = async (
+    mode: "print-loading-report" | "print-packing-list",
+  ) => {
+    await document.fonts?.ready;
+    await new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => resolve()),
+    );
+    const cleanup = () => {
+      document.body.classList.remove("print-loading-report", "print-packing-list");
+    };
+    cleanup();
+    document.body.classList.add(mode);
+    window.addEventListener("afterprint", cleanup, { once: true });
+    window.print();
+    window.setTimeout(cleanup, 2000);
+  };
   const printReport = async () => {
     if (!reportReady) {
       const detail = incompleteRows.length
@@ -1269,9 +1184,7 @@ export default function MixedPlanner({
             `${incompleteRows.length} 行已开始但字段未完整。`,
             `${incompleteRows.length} started row(s) are incomplete.`,
           )
-        : layoutStrategy !== confirmedLayoutStrategy
-          ? tr("请先确认采用的装柜排布方案。", "Confirm the selected loading layout first.")
-          : preflight.errors[0] ||
+        : preflight.errors[0] ||
           tr("请先完成有效产品数据。", "Complete valid product data first.");
       setPrintError(detail);
       return;
@@ -1334,7 +1247,7 @@ export default function MixedPlanner({
       if (
         !section.querySelector(".mixed-plan-frame") ||
         !section.querySelector(".mixed-side-view") ||
-        !section.querySelector(".mixed-cross-section-wrap")
+        !section.querySelector(".mixed-end-view")
       )
         structureErrors.push(
           tr(
@@ -1362,7 +1275,79 @@ export default function MixedPlanner({
       return;
     }
     setPrintError("");
-    window.print();
+    await runPrintMode("print-loading-report");
+  };
+  const printPackingList = async () => {
+    if (!reportReady) {
+      const detail = incompleteRows.length
+        ? tr(
+            `${incompleteRows.length} 行已开始但字段未完整。`,
+            `${incompleteRows.length} started row(s) are incomplete.`,
+          )
+        : preflight.errors[0] ||
+          tr("请先完成有效产品数据。", "Complete valid product data first.");
+      setPrintError(detail);
+      return;
+    }
+    await document.fonts?.ready;
+    await new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => resolve()),
+    );
+    const report = document.querySelector<HTMLElement>(".packing-list-print");
+    const productRows =
+      report?.querySelectorAll(".packing-list-products tbody tr").length ?? 0;
+    const allocationRows =
+      report?.querySelectorAll(".packing-list-allocation tbody tr").length ?? 0;
+    const expectedAllocationRows = result.containers.reduce(
+      (sum, plan) => sum + plan.blocks.length,
+      0,
+    );
+    const structureErrors: string[] = [];
+    if (!report)
+      structureErrors.push(
+        tr("Packing List 结构不存在。", "Packing List markup is missing."),
+      );
+    if (productRows !== validItems.length)
+      structureErrors.push(
+        tr(
+          "Packing List 产品行数与有效 SKU 数不一致。",
+          "Packing List product rows do not match valid SKUs.",
+        ),
+      );
+    if (allocationRows !== expectedAllocationRows)
+      structureErrors.push(
+        tr(
+          "Packing List 分柜行数与装柜分区不一致。",
+          "Packing List container rows do not match loading zones.",
+        ),
+      );
+    const summaryMatches =
+      Number(report?.dataset.totalEa) === result.totalDemandEa &&
+      Number(report?.dataset.totalBoxes) === result.totalRequiredBoxes &&
+      Number(report?.dataset.totalPallets) === result.totalRequiredPallets &&
+      Math.abs(
+        Number(report?.dataset.totalCbm) - result.totalRequiredVolumeCbm,
+      ) < 0.000001;
+    if (!summaryMatches)
+      structureErrors.push(
+        tr(
+          "Packing List 合计与装柜计算结果不一致。",
+          "Packing List totals do not match the loading result.",
+        ),
+      );
+    if (/\b(?:NaN|Infinity|undefined|null)\b/.test(report?.textContent ?? ""))
+      structureErrors.push(
+        tr(
+          "Packing List 中存在无效数值或缺失字段。",
+          "The Packing List contains an invalid number or missing value.",
+        ),
+      );
+    if (structureErrors.length) {
+      setPrintError(structureErrors[0]);
+      return;
+    }
+    setPrintError("");
+    await runPrintMode("print-packing-list");
   };
   const selectSeries = (id: string, series: string) =>
     updateRow(id, {
@@ -1426,6 +1411,12 @@ export default function MixedPlanner({
               }}
             >
               {tr("网页分享", "Share Web Plan")}
+            </button>
+            <button
+              disabled={!reportReady}
+              onClick={printPackingList}
+            >
+              {tr("Packing List PDF", "Packing List PDF")}
             </button>
             <button
               className="primary"
@@ -1575,14 +1566,7 @@ export default function MixedPlanner({
           <div className="mixed-config-status">
             <span>{tr("高度向上", "Upright only")}</span>
             <span>{tr("底面允许 90°", "Base rotation 90°")}</span>
-            <span>
-              {allowSkuInterlock
-                ? tr(
-                    "SKU 边界交错、不重叠",
-                    "SKU boundaries interlock; no overlap",
-                  )
-                : tr("SKU 严格矩形分区", "Strict rectangular SKU zones")}
-            </span>
+            <span>{tr("自动最紧凑排布", "Automatic compact layout")}</span>
             <span>{tr("尾箱置顶禁压", "Partial carton protected")}</span>
           </div>
           <details className="mixed-advanced-config">
@@ -1702,35 +1686,6 @@ export default function MixedPlanner({
                     }
                   />
                 </div>
-              </label>
-              <label
-                className="mixed-interlock-toggle"
-                aria-label={tr(
-                  "允许相邻 SKU 边界交错补位",
-                  "Allow adjacent SKU boundary interlock",
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={allowSkuInterlock}
-                  onChange={(event) =>
-                    setAllowSkuInterlock(event.target.checked)
-                  }
-                />
-                <span>
-                  <b>
-                    {tr(
-                      "允许相邻 SKU 边界交错补位",
-                      "Allow adjacent SKU boundary interlock",
-                    )}
-                  </b>
-                  <small>
-                    {tr(
-                      "同一卸货批次优先；保持完整间隙、绝不重叠，交错边界使用标识隔板",
-                      "Best for one unloading batch; keep full clearance, never overlap and mark interlocked boundaries",
-                    )}
-                  </small>
-                </span>
               </label>
             </div>
           </details>
@@ -2104,82 +2059,6 @@ export default function MixedPlanner({
           ) : null}
         </div>
 
-        <section className="layout-choice panel" aria-labelledby="layout-choice-title">
-          <div className="layout-choice-heading">
-            <div>
-              <p className="section-kicker">02 · LAYOUT OPTIONS</p>
-              <h3 id="layout-choice-title">{tr("装柜排布方案 · 客户确认", "LOADING LAYOUT · CUSTOMER CONFIRMATION")}</h3>
-            </div>
-            <span>{tr("所有方案均经过边界、间隙、高度与不重叠校验", "Every option is checked for boundaries, gaps, height and non-overlap")}</span>
-          </div>
-          <div className="layout-choice-grid">
-            {layoutOptions.map((option) => {
-              const optionResult = option.result;
-              const rotations = optionResult.containers.reduce(
-                (sum, plan) => sum + plan.blocks.reduce(
-                  (blockSum, block) => blockSum + block.rotatedFloorPositions,
-                  0,
-                ),
-                0,
-              );
-              const interlocks = optionResult.containers.reduce(
-                (sum, plan) => sum + plan.skuBoundaryInterlocks,
-                0,
-              );
-              const label = option.id === "maximum"
-                ? tr("A · 最大装量优先", "A · MAXIMUM CAPACITY")
-                : option.id === "entered-order"
-                  ? tr("B · 按输入顺序", "B · ENTERED SEQUENCE")
-                  : tr("C · 清晰分区", "C · CLEAR SKU ZONES");
-              const note = option.id === "maximum"
-                ? tr(`比较 ${option.candidateCount} 种 SKU 顺序并选择最紧凑实装结果`, `Best compact physical result from ${option.candidateCount} deterministic SKU sequences`)
-                : option.id === "entered-order"
-                  ? tr("保留清单顺序，允许安全轮廓交错补位", "Preserves list order with safe contour interlocking")
-                  : tr("禁止 SKU 边界交错，便于识别和卸货", "No SKU-boundary interlock for the clearest handling zones");
-              return (
-                <button
-                  type="button"
-                  key={option.id}
-                  className={`${layoutStrategy === option.id ? "selected" : ""}${confirmedLayoutStrategy === option.id ? " confirmed" : ""}`}
-                  onClick={() => {
-                    setLayoutStrategy(option.id as "maximum" | "entered-order" | "clear-zones");
-                    setActiveContainer(0);
-                    setPrintError("");
-                  }}
-                >
-                  <header>
-                    <b>{label}</b>
-                    {option.recommended ? <em>{tr("推荐", "RECOMMENDED")}</em> : null}
-                    {confirmedLayoutStrategy === option.id ? <strong>{tr("已确认", "CONFIRMED")}</strong> : null}
-                  </header>
-                  <p>{note}</p>
-                  <dl>
-                    <div><dt>{tr("柜数", "Containers")}</dt><dd>{optionResult.containers.length || "—"}</dd></div>
-                    <div><dt>{tr("总箱", "Cartons")}</dt><dd>{formatNumber(optionResult.totalRequiredBoxes)}</dd></div>
-                    <div><dt>{tr("旋转位", "Rotations")}</dt><dd>{formatNumber(rotations)}</dd></div>
-                    <div><dt>{tr("交错边界", "Interlocks")}</dt><dd>{formatNumber(interlocks)}</dd></div>
-                  </dl>
-                </button>
-              );
-            })}
-          </div>
-          <div className="layout-confirm-row">
-            <span>
-              {layoutStrategy === confirmedLayoutStrategy
-                ? tr("当前排布已确认，可输出报告。", "The current layout is confirmed and report-ready.")
-                : tr("正在预览其它排布；确认后才会写入正式报告。", "You are previewing another layout; confirm it before report output.")}
-            </span>
-            <button
-              type="button"
-              className="primary"
-              disabled={layoutStrategy === confirmedLayoutStrategy}
-              onClick={() => setConfirmedLayoutStrategy(layoutStrategy)}
-            >
-              {tr("确认采用此方案", "CONFIRM THIS LAYOUT")}
-            </button>
-          </div>
-        </section>
-
         <div className="mixed-summary-grid">
           <article>
             <span>{tr("有效 SKU", "Valid SKUs")}</span>
@@ -2276,22 +2155,6 @@ export default function MixedPlanner({
                 {formatNumber(selectedPlan.remainingLength)} mm
               </strong>
             </div>
-            {selectedPlan.skuBoundaryInterlocks ? (
-              <div className="mixed-interlock-notice">
-                <b>
-                  {tr(
-                    `已优化 ${selectedPlan.skuBoundaryInterlocks} 处 SKU 边界`,
-                    `${selectedPlan.skuBoundaryInterlocks} SKU boundary/boundaries optimized`,
-                  )}
-                </b>
-                <span>
-                  {tr(
-                    "仅允许空余轮廓交错补位，纸箱/托盘之间仍保留设定间隙且绝不重叠。现场须按颜色/代码分区，并在交错边界使用清晰标识隔板。",
-                    "Only unused footprint contours interlock. Cartons/pallets still keep the configured clearance and never overlap. Mark zones by color/code and use visible divider sheets at interlocked boundaries.",
-                  )}
-                </span>
-              </div>
-            ) : null}
             {selectedPlan.incompletePalletTops ? (
               <div className="pallet-top-warning">
                 <b>{tr(
@@ -2457,10 +2320,11 @@ export default function MixedPlanner({
       >
         <header className="report-header">
           <div>
+            <MegeeLogo className="report-brand-logo" />
             <p>
               {isEnglish
-                ? "ZHEJIANG MEGEE INDUSTRY CO., LTD. · MEGEE"
-                : "浙江美集实业有限公司 · MEGEE"}
+                ? "ZHEJIANG MEGEE INDUSTRY CO., LTD."
+                : "浙江美集实业有限公司"}
             </p>
             <h1>{tr("多产品拼柜方案报告", "MIXED PRODUCT LOADING PLAN")}</h1>
             <span>
@@ -2744,22 +2608,6 @@ export default function MixedPlanner({
                 )}</span>
               </div>
             ) : null}
-            {plan.skuBoundaryInterlocks ? (
-              <div className="report-interlock-note">
-                <b>
-                  {tr(
-                    `SKU 边界交错补位 ${plan.skuBoundaryInterlocks} 处`,
-                    `${plan.skuBoundaryInterlocks} INTERLOCKED SKU BOUNDARY/BORDERS`,
-                  )}
-                </b>
-                <span>
-                  {tr(
-                    "仅空余轮廓交错，任何包装均无重叠并保留分区间隙；交错边界须使用颜色/代码标识隔板。隔板仅用于识别，不能代替结构挡固。",
-                    "Only unused footprint contours interlock; no package overlaps and the zone clearance is retained. Use color/code divider sheets at interlocked boundaries. Identification sheets do not replace structural blocking.",
-                  )}
-                </span>
-              </div>
-            ) : null}
             <MixedPlanCanvas
               plan={plan}
               container={container}
@@ -2827,9 +2675,6 @@ export default function MixedPlanner({
                     <td>
                       {formatNumber(block.startX)}–
                       {formatNumber(block.startX + block.length)} mm
-                      {block.interlockedWithPrevious
-                        ? tr(" · 交错", " · INTERLOCK")
-                        : ""}
                     </td>
                   </tr>
                 ))}
@@ -2845,8 +2690,8 @@ export default function MixedPlanner({
           <ol>
             <li>
               {tr(
-                "每款纸箱高度始终向上，仅允许底面长宽旋转 90°；相邻 SKU 可在空余轮廓交错补位，但任何实体包装不得重叠、挤压或缩小规定间隙。",
-                "Keep every carton upright. Only 90° base rotation is permitted. Adjacent SKUs may interlock unused footprint contours, but physical packages must never overlap, compress or reduce the specified clearance.",
+                "每款纸箱高度始终向上，仅允许底面长宽旋转 90°；任何纸箱或托盘不得重叠、挤压或缩小规定间隙。",
+                "Keep every carton upright. Only 90° base rotation is permitted. Cartons and pallets must never overlap, compress or reduce the specified clearance.",
               )}
             </li>
             <li>
@@ -2887,13 +2732,13 @@ export default function MixedPlanner({
             </li>
             <li>
               {tr(
-                "本报告采用可识别 SKU 装载区与可选边界交错的工程优化算法，并对小型高密度布局作精确校正；默认禁止不同 SKU 上下混堆。识别隔板不代替结构挡固，本报告也不替代承重与安全校核。",
-                "The report uses identifiable SKU zones with optional boundary interlock and exact correction for small dense layouts. Vertical cross-stacking between different SKUs is prohibited by default. Identification sheets do not replace structural blocking, and this report does not replace load-bearing or safety checks.",
+                "本报告自动采用通过边界、间隙与高度校验的最紧凑装载方案；默认禁止不同 SKU 上下混堆。本报告不替代承重与现场安全校核。",
+                "This report automatically uses the most compact layout that passes boundary, clearance and height checks. Vertical stacking between different SKUs is prohibited by default. This report does not replace load-bearing or site safety checks.",
               )}
             </li>
           </ol>
         </section>
-        <section className="report-section report-execution-record report-page-break">
+        <section className="report-section report-execution-record">
           <h2>
             <span>{String(result.containers.length + 3).padStart(2, "0")}</span>
             {tr("装柜复核与签核记录", "LOADING VERIFICATION & SIGN-OFF RECORD")}
@@ -2928,19 +2773,11 @@ export default function MixedPlanner({
           <div className="report-execution-notes">
             <article>
               <b>{tr("现场偏差与处置记录", "SITE DEVIATION & CORRECTIVE ACTION")}</b>
-              {Array.from({ length: 7 }, (_, index) => (
+              {Array.from({ length: 3 }, (_, index) => (
                 <span key={index} />
               ))}
             </article>
             <article>
-              <b>{tr("装柜照片 / 文件索引", "LOADING PHOTO / FILE INDEX")}</b>
-              <div className="report-photo-index">
-                {Array.from({ length: 4 }, (_, index) => (
-                  <span key={index}>
-                    {tr(`照片 ${index + 1}`, `PHOTO ${index + 1}`)}
-                  </span>
-                ))}
-              </div>
               <b>{tr("封柜结论", "CLOSING DECISION")}</b>
               <p>
                 □ {tr("符合方案，可封柜", "Plan verified; container may be closed")}
@@ -2988,6 +2825,289 @@ export default function MixedPlanner({
             v{appVersion} · Build {buildVersion} · {reportNumber}
           </b>
         </div>
+      </section>
+
+      <section
+        className="print-report packing-list-print"
+        lang={isEnglish ? "en" : "zh-CN"}
+        data-total-ea={result.totalDemandEa}
+        data-total-boxes={result.totalRequiredBoxes}
+        data-total-pallets={result.totalRequiredPallets}
+        data-total-cbm={result.totalRequiredVolumeCbm}
+      >
+        <header className="packing-list-header">
+          <div>
+            <MegeeLogo className="packing-list-logo" />
+            <p>
+              {tr(
+                "浙江美集实业有限公司",
+                "ZHEJIANG MEGEE INDUSTRY CO., LTD.",
+              )}
+            </p>
+            <h1>{tr("装箱单", "PACKING LIST")}</h1>
+          </div>
+          <dl>
+            <div>
+              <dt>{tr("装箱单号", "Packing List No.")}</dt>
+              <dd>{packingListNumber}</dd>
+            </div>
+            <div>
+              <dt>{tr("日期", "Date")}</dt>
+              <dd>{reportDate}</dd>
+            </div>
+            <div>
+              <dt>{tr("柜型 / 柜数", "Container / Qty")}</dt>
+              <dd>
+                {containerType} / {result.containers.length}
+              </dd>
+            </div>
+          </dl>
+        </header>
+
+        <section className="packing-list-order-meta">
+          <div>
+            <b>{tr("客户", "Customer")}</b>
+            <span />
+          </div>
+          <div>
+            <b>{tr("订单号", "Order / PO No.")}</b>
+            <span />
+          </div>
+          <div>
+            <b>{tr("目的地", "Destination")}</b>
+            <span />
+          </div>
+          <div>
+            <b>{tr("唛头", "Shipping Mark")}</b>
+            <span />
+          </div>
+        </section>
+
+        <section className="packing-list-summary">
+          <div>
+            <span>{tr("SKU", "SKU")}</span>
+            <b>{validItems.length}</b>
+          </div>
+          <div>
+            <span>{tr("产品总数", "Total Quantity")}</span>
+            <b>{formatNumber(result.totalDemandEa)} EA</b>
+          </div>
+          <div>
+            <span>{tr("总箱数", "Total Cartons")}</span>
+            <b>{formatNumber(result.totalRequiredBoxes)} CTN</b>
+          </div>
+          <div>
+            <span>{tr("总托盘数", "Total Pallets")}</span>
+            <b>
+              {result.totalRequiredPallets
+                ? `${formatNumber(result.totalRequiredPallets)} PLT`
+                : "—"}
+            </b>
+          </div>
+          <div>
+            <span>{tr("包装总材积", "Total Packing Volume")}</span>
+            <b>{formatNumber(result.totalRequiredVolumeCbm, 2)} CBM</b>
+          </div>
+          <div>
+            <span>{tr("集装箱", "Containers")}</span>
+            <b>
+              {result.containers.length} × {containerType}
+            </b>
+          </div>
+        </section>
+
+        <section className="packing-list-section">
+          <h2>{tr("产品包装明细", "PRODUCT PACKING DETAILS")}</h2>
+          <table className="packing-list-products">
+            <colgroup>
+              <col className="pl-col-no" />
+              <col className="pl-col-series" />
+              <col className="pl-col-code" />
+              <col className="pl-col-product" />
+              <col className="pl-col-pack" />
+              <col className="pl-col-qty" />
+              <col className="pl-col-eabox" />
+              <col className="pl-col-ctn" />
+              <col className="pl-col-plt" />
+              <col className="pl-col-carton" />
+              <col className="pl-col-partial" />
+              <col className="pl-col-cbm" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>No.</th>
+                <th>{tr("系列", "Series")}</th>
+                <th>{tr("产品代码", "Code")}</th>
+                <th>{tr("品名规格", "Product / Specification")}</th>
+                <th>{tr("包装", "Pack")}</th>
+                <th>{tr("产品数量", "Quantity")}<small>EA</small></th>
+                <th>EA/BOX</th>
+                <th>{tr("箱数", "Cartons")}<small>CTN</small></th>
+                <th>{tr("托盘", "Pallets")}<small>PLT</small></th>
+                <th>{tr("外箱尺寸 L×W×H", "Carton L×W×H")}<small>mm</small></th>
+                <th>{tr("尾箱", "Partial")}<small>EA</small></th>
+                <th>CBM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {validItems.map((item, index) => {
+                const calculated = calculatedItems.get(item.id);
+                const remainder = item.productQuantity % item.eaPerBox;
+                return (
+                  <tr key={item.id}>
+                    <td>{index + 1}</td>
+                    <td>{item.series || "—"}</td>
+                    <td><b>{item.code || "—"}</b></td>
+                    <td>{item.name || "—"}</td>
+                    <td>
+                      {item.packaging === "pallet"
+                        ? tr("托盘", "PALLET")
+                        : tr("纸箱", "CARTON")}
+                    </td>
+                    <td className="numeric">{formatNumber(item.productQuantity)}</td>
+                    <td className="numeric">{formatNumber(item.eaPerBox)}</td>
+                    <td className="numeric">
+                      {formatNumber(
+                        cartonsForDemand(item.productQuantity, item.eaPerBox),
+                      )}
+                    </td>
+                    <td className="numeric">
+                      {item.packaging === "pallet"
+                        ? formatNumber(calculated?.requiredUnits ?? 0)
+                        : "—"}
+                    </td>
+                    <td>
+                      {item.carton.l} × {item.carton.w} × {item.carton.h}
+                    </td>
+                    <td className="numeric">{remainder || "—"}</td>
+                    <td className="numeric">
+                      {formatNumber(calculated?.requiredVolumeCbm ?? 0, 2)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th colSpan={5}>{tr("合计", "TOTAL")}</th>
+                <th className="numeric">{formatNumber(result.totalDemandEa)}</th>
+                <th>—</th>
+                <th className="numeric">{formatNumber(result.totalRequiredBoxes)}</th>
+                <th className="numeric">
+                  {result.totalRequiredPallets
+                    ? formatNumber(result.totalRequiredPallets)
+                    : "—"}
+                </th>
+                <th>—</th>
+                <th>—</th>
+                <th className="numeric">
+                  {formatNumber(result.totalRequiredVolumeCbm, 2)}
+                </th>
+              </tr>
+            </tfoot>
+          </table>
+        </section>
+
+        <section className="packing-list-section packing-list-container-section">
+          <h2>{tr("分柜装箱明细", "CONTAINER ALLOCATION")}</h2>
+          <table className="packing-list-allocation">
+            <colgroup>
+              <col className="pl-col-container" />
+              <col className="pl-col-no" />
+              <col className="pl-col-code" />
+              <col className="pl-col-product" />
+              <col className="pl-col-pack" />
+              <col className="pl-col-ctn" />
+              <col className="pl-col-qty" />
+              <col className="pl-col-plt" />
+              <col className="pl-col-partial" />
+              <col className="pl-col-cbm" />
+              <col className="pl-col-zone" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>{tr("柜号", "Container")}</th>
+                <th>No.</th>
+                <th>{tr("产品代码", "Code")}</th>
+                <th>{tr("品名规格", "Product / Specification")}</th>
+                <th>{tr("包装", "Pack")}</th>
+                <th>CTN</th>
+                <th>EA</th>
+                <th>PLT</th>
+                <th>{tr("尾箱 EA", "Partial EA")}</th>
+                <th>CBM</th>
+                <th>{tr("装载区 mm", "Loading Zone mm")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.containers.flatMap((plan) =>
+                plan.blocks.map((block, blockIndex) => (
+                  <tr key={`${plan.index}-${block.item.id}`}>
+                    <td><b>{containerType}-{plan.index}</b></td>
+                    <td>{blockIndex + 1}</td>
+                    <td><b>{block.item.code || "—"}</b></td>
+                    <td>{block.item.name || "—"}</td>
+                    <td>
+                      {block.item.packaging === "pallet"
+                        ? tr("托盘", "PALLET")
+                        : tr("纸箱", "CARTON")}
+                    </td>
+                    <td className="numeric">{formatNumber(block.loadedBoxes)}</td>
+                    <td className="numeric">{formatNumber(block.loadedEa)}</td>
+                    <td className="numeric">
+                      {block.loadedPallets
+                        ? formatNumber(block.loadedPallets)
+                        : "—"}
+                    </td>
+                    <td className="numeric">{block.partialCartonEa || "—"}</td>
+                    <td className="numeric">{formatNumber(block.volumeCbm, 2)}</td>
+                    <td>
+                      {formatNumber(block.startX)}–
+                      {formatNumber(block.startX + block.length)}
+                    </td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th colSpan={5}>{tr("全部集装箱合计", "ALL CONTAINERS TOTAL")}</th>
+                <th className="numeric">{formatNumber(result.totalRequiredBoxes)}</th>
+                <th className="numeric">{formatNumber(result.totalDemandEa)}</th>
+                <th className="numeric">
+                  {result.totalRequiredPallets
+                    ? formatNumber(result.totalRequiredPallets)
+                    : "—"}
+                </th>
+                <th>—</th>
+                <th className="numeric">{formatNumber(result.totalRequiredVolumeCbm, 2)}</th>
+                <th>—</th>
+              </tr>
+            </tfoot>
+          </table>
+        </section>
+
+        <section className="packing-list-notes">
+          <div>
+            <b>{tr("备注", "Remarks")}</b>
+            <span />
+            <span />
+          </div>
+          <div className="packing-list-signoff">
+            <p>{tr("制单", "Prepared by")}：<span /></p>
+            <p>{tr("复核", "Checked by")}：<span /></p>
+            <p>{tr("日期", "Date")}：<span /></p>
+          </div>
+        </section>
+        <footer className="packing-list-footer">
+          <span>
+            © 2026 {tr("浙江美集实业有限公司", "Zhejiang Megee Industry Co., Ltd.")} ·
+            MEGEE COSPACK
+          </span>
+          <b>
+            Container Planner v{appVersion} · Build {buildVersion} · {packingListNumber}
+          </b>
+        </footer>
       </section>
     </>
   );

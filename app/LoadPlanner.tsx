@@ -9,6 +9,7 @@ import {
 } from "../lib/packing.js";
 import { readFirstXlsxSheet, type SpreadsheetCell } from "../lib/xlsx";
 import MixedPlanner from "./MixedPlanner";
+import MegeeLogo from "./MegeeLogo";
 
 type Mode = "carton" | "pallet";
 type ViewMode = "top" | "side" | "front" | "pallet";
@@ -59,7 +60,7 @@ type SavedPlan = {
 
 const PLAN_STORAGE_KEY = "megee-loadwise-plans-v1";
 const PRODUCT_STORAGE_KEY = "megee-container-products-v2";
-const APP_VERSION = "2.7.0";
+const APP_VERSION = "2.7.1";
 const ALGORITHM_VERSION = "LW 2.8 / MIX 1.5";
 const BUILD_VERSION = import.meta.env.VITE_BUILD_COMMIT || "local";
 
@@ -1176,7 +1177,7 @@ export default function LoadPlanner({
         }}
       />
       <header className="site-header">
-        <div className="brand-mark" aria-hidden="true"><span>M</span></div>
+        <MegeeLogo compact className="brand-mark" />
         <div className="brand-copy">
           <p className="eyebrow">{tr("浙江美集实业有限公司", "ZHEJIANG MEGEE INDUSTRY CO., LTD.")}</p>
           <h1>{tr("集装箱装柜规划", "Container Loading Planner")}</h1>
@@ -1596,7 +1597,7 @@ export default function LoadPlanner({
 
       {workspaceView !== "mixed" && <section className="print-report" lang={reportLanguage === "en" ? "en" : "zh-CN"}>
         <header className="report-header">
-          <div><p>{reportIsEnglish ? "ZHEJIANG MEGEE INDUSTRY CO., LTD. · MEGEE" : "浙江美集实业有限公司 · MEGEE"}</p><h1>{reportIsEnglish ? "CONTAINER LOADING PLAN" : "集装箱装柜方案报告"}</h1><span>{reportIsEnglish ? "Operator-ready loading instruction" : "现场装柜操作指引"}</span></div>
+          <div><MegeeLogo className="report-brand-logo" /><p>{reportIsEnglish ? "ZHEJIANG MEGEE INDUSTRY CO., LTD." : "浙江美集实业有限公司"}</p><h1>{reportIsEnglish ? "CONTAINER LOADING PLAN" : "集装箱装柜方案报告"}</h1><span>{reportIsEnglish ? "Operator-ready loading instruction" : "现场装柜操作指引"}</span></div>
           <dl>
             <div><dt>{reportIsEnglish ? "Report No." : "报告编号"}</dt><dd>{reportNumber}</dd></div>
             <div><dt>{reportIsEnglish ? "Generated" : "生成日期"}</dt><dd>{reportDate}</dd></div>
