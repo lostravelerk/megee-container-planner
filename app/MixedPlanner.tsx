@@ -510,11 +510,13 @@ export default function MixedPlanner({
   products,
   containers,
   appVersion,
+  buildVersion,
 }: {
   language: Language;
   products: ProductOption[];
   containers: Record<string, Dimensions>;
   appVersion: string;
+  buildVersion: string;
 }) {
   const isEnglish = language === "en";
   const tr = (zh: string, en: string) => (isEnglish ? en : zh);
@@ -1949,7 +1951,7 @@ export default function MixedPlanner({
             MEGEE COSPACK
           </span>
           <b>
-            Container Planner v{appVersion} · {reportNumber}
+            Container Planner v{appVersion} · Build {buildVersion} · {reportNumber}
           </b>
         </div>
         <div className="report-running-footer">
@@ -1958,7 +1960,7 @@ export default function MixedPlanner({
             MEGEE COSPACK
           </span>
           <b>
-            v{appVersion} · {reportNumber}
+            v{appVersion} · Build {buildVersion} · {reportNumber}
           </b>
         </div>
       </section>

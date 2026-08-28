@@ -61,6 +61,7 @@ const PLAN_STORAGE_KEY = "megee-loadwise-plans-v1";
 const PRODUCT_STORAGE_KEY = "megee-container-products-v2";
 const APP_VERSION = "2.5.0";
 const ALGORITHM_VERSION = "LW 2.5";
+const BUILD_VERSION = import.meta.env.VITE_BUILD_COMMIT || "local";
 
 const CONTAINERS: Record<string, Dimensions> = {
   "20GP": { l: 5898, w: 2352, h: 2393, doorW: 2340, doorH: 2292 },
@@ -1258,7 +1259,7 @@ export default function LoadPlanner() {
         </section>
       )}
 
-      {workspaceView === "mixed" && <MixedPlanner language={reportLanguage} products={products} containers={CONTAINERS} appVersion={APP_VERSION} />}
+      {workspaceView === "mixed" && <MixedPlanner language={reportLanguage} products={products} containers={CONTAINERS} appVersion={APP_VERSION} buildVersion={BUILD_VERSION} />}
 
       {workspaceView === "planner" && <><section className="mode-section" aria-labelledby="package-unit-label">
         <p className="mode-label" id="package-unit-label">{tr("最大包装单元", "MAXIMUM PACKAGING UNIT")}</p>
@@ -1584,7 +1585,7 @@ export default function LoadPlanner() {
       <footer className="app-footer">
         <span>© 2026 {tr("浙江美集实业有限公司", "Zhejiang Megee Industry Co., Ltd.")} · MEGEE COSPACK</span>
         <span>{tr("保留所有权利", "All rights reserved")}</span>
-        <b>Container Planner v{APP_VERSION}</b>
+        <b>Container Planner v{APP_VERSION} · Build {BUILD_VERSION}</b>
       </footer>
 
       {workspaceView !== "mixed" && <section className="print-report" lang={reportLanguage === "en" ? "en" : "zh-CN"}>
@@ -1714,8 +1715,8 @@ export default function LoadPlanner() {
         </section>
 
         <footer className="report-signoff"><div>{reportIsEnglish ? "Prepared by:" : "制表："}<span /></div><div>{reportIsEnglish ? "Checked by:" : "复核："}<span /></div><div>{reportIsEnglish ? "Approved by:" : "批准："}<span /></div><div>{reportIsEnglish ? "Date:" : "日期："}<span /></div></footer>
-        <div className="report-document-footer"><span>© 2026 {reportIsEnglish ? "Zhejiang Megee Industry Co., Ltd." : "浙江美集实业有限公司"} · MEGEE COSPACK</span><b>Container Planner v{APP_VERSION} · {reportNumber}</b></div>
-        <div className="report-running-footer" aria-hidden="true"><span>{reportIsEnglish ? "Zhejiang Megee Industry Co., Ltd." : "浙江美集实业有限公司"} · MEGEE COSPACK</span><b>v{APP_VERSION} · {reportNumber}</b></div>
+        <div className="report-document-footer"><span>© 2026 {reportIsEnglish ? "Zhejiang Megee Industry Co., Ltd." : "浙江美集实业有限公司"} · MEGEE COSPACK</span><b>Container Planner v{APP_VERSION} · Build {BUILD_VERSION} · {reportNumber}</b></div>
+        <div className="report-running-footer" aria-hidden="true"><span>{reportIsEnglish ? "Zhejiang Megee Industry Co., Ltd." : "浙江美集实业有限公司"} · MEGEE COSPACK</span><b>v{APP_VERSION} · Build {BUILD_VERSION} · {reportNumber}</b></div>
       </section>}
     </main>
   );

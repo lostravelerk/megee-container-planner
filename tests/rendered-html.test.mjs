@@ -39,6 +39,7 @@ test("keeps Megee carton, pallet and height defaults in source", async () => {
   assert.match(source, /pallet:\s*\{\s*l:\s*1000,\s*w:\s*1200,\s*h:\s*150\s*\}/);
   assert.match(source, /useState\(1800\)/);
   assert.match(source, /useState\(70\)/);
+  assert.match(source, /Build \{BUILD_VERSION\}/);
   assert.match(source, /STANDARD_IMPORT_HEADERS.*系列.*产品代码.*品名规格.*产品数量.*EA\/BOX.*外箱尺寸.*包装方式.*托盘尺寸/);
   assert.match(source, /parseCartonSize\(row\[indexes\.carton\]\) \?\? DEFAULTS\.carton/);
   assert.doesNotMatch(source, /api\/cost\/products|同步 Cost|只读同步 Cost/);
