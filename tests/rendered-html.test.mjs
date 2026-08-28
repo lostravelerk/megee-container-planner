@@ -50,6 +50,13 @@ test("offers manual and cascading Megee-material entry for mixed loads", async (
   assert.match(source, /选择美集物料/);
   assert.match(source, /手工添加拼柜 SKU/);
   assert.match(source, /选择代码 · 品名/);
+  assert.match(source, /装箱数量 EA\/BOX/);
+  assert.match(source, /外箱 L×W×H/);
+  assert.match(source, /托盘 L×W×H \/ 外伸/);
+  assert.match(source, /className="inline-dimensions"/);
+  assert.match(source, /LONGITUDINAL SIDE VIEW/);
+  assert.match(source, /TRUE TRANSVERSE SECTIONS/);
+  assert.match(source, /PALLET CARTON PATTERNS/);
   assert.match(source, /products\.filter\(\s*\(product\) => product\.family === row\.series,?\s*\)/);
   assert.match(source, /CBM 材积/);
   assert.match(source, /validateMixedPlan/);
@@ -60,6 +67,7 @@ test("offers manual and cascading Megee-material entry for mixed loads", async (
   assert.match(source, /创建稳定短链接/);
   assert.match(source, /fetch\("\/api\/shares"/);
   assert.match(source, /navigator\.clipboard\?\.writeText/);
+  assert.doesNotMatch(source, /kitOptimizer|KIT OPTIMIZER|Item Group|齐套项次/);
   assert.doesNotMatch(source, /mailto:|location\.search.*rows|URLSearchParams.*rows/);
 });
 
@@ -67,7 +75,9 @@ test("keeps formal PDF pagination rules explicit", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /thead\s*\{\s*display:\s*table-header-group/);
   assert.match(styles, /mixed-plan-scroll[^}]*break-inside:\s*avoid-page/);
-  assert.match(styles, /mixed-cross-section-wrap[^}]*break-inside:\s*avoid-page/);
+  assert.match(styles, /mixed-cross-row[^}]*break-inside:\s*avoid-page/);
+  assert.match(styles, /mixed-side-view[^}]*break-inside:\s*avoid-page/);
+  assert.match(styles, /report-execution-record[^}]*min-height:\s*258mm/);
 });
 
 test("ships the standard import template without a public product snapshot", async () => {

@@ -50,7 +50,6 @@ function sanitizePayload(input: unknown) {
         : {};
       return {
         id: `shared-${index + 1}`,
-        itemGroup: text(row.itemGroup, 40),
         series: text(row.series),
         code: text(row.code, 80),
         name: text(row.name, 240),

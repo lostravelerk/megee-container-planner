@@ -7,10 +7,6 @@ import {
   planMixedContainers,
   validateMixedPlan,
 } from "../lib/mixedPacking.js";
-import {
-  optimizeKitPurchases,
-  validateKitAssignments,
-} from "../lib/kitOptimizer.js";
 
 type Dimensions = {
   l: number;
@@ -34,7 +30,6 @@ type ProductOption = {
 };
 type MixedRow = {
   id: string;
-  itemGroup: string;
   series: string;
   code: string;
   name: string;
@@ -84,7 +79,6 @@ const COLORS = [
 function emptyRow(index: number, id = `mix-initial-${index}`): MixedRow {
   return {
     id,
-    itemGroup: "",
     series: "",
     code: "",
     name: "",
@@ -360,7 +354,24 @@ function MixedCrossSections({
         </span>
       </h4>
       <div className="mixed-cross-section-grid">
-        {diagrams.map((diagram, diagramIndex) => {
+        {Array.from(
+          { length: Math.ceil(diagrams.length / 4) },
+          (_, rowIndex) => (
+            <div className="mixed-cross-row" key={`cross-row-${rowIndex}`}>
+              {rowIndex === 0 ? (
+                <div className="mixed-cross-row-title">
+                  <b>{isEnglish ? "TRUE TRANSVERSE END VIEWS" : "真实横向端视图"}</b>
+                  <span>
+                    {isEnglish
+                      ? "Calculated at every footprint change"
+                      : "按平面排布变化位置逐段计算"}
+                  </span>
+                </div>
+              ) : null}
+              {diagrams
+                .slice(rowIndex * 4, rowIndex * 4 + 4)
+                .map((diagram, localIndex) => {
+          const diagramIndex = rowIndex * 4 + localIndex;
           const skuCodes = [
             ...new Set(
               diagram.positions.map((position) => {
@@ -520,9 +531,212 @@ function MixedCrossSections({
               </p>
             </article>
           );
-        })}
+                })}
+            </div>
+          ),
+        )}
       </div>
     </div>
+  );
+}
+
+function MixedSideView({
+  plan,
+  container,
+  doorClearance,
+  language,
+}: {
+  plan: ReturnType<typeof planMixedContainers>["containers"][number];
+  container: Dimensions;
+  doorClearance: number;
+  language: Language;
+}) {
+  const isEnglish = language === "en";
+  const boundaries = [
+    ...new Set(
+      plan.positions.flatMap((position) => [
+        position.x,
+        position.x + position.w,
+      ]),
+    ),
+  ].sort((a, b) => a - b);
+  const slices: Array<{
+    startX: number;
+    endX: number;
+    height: number;
+    levels: number;
+    codes: string[];
+    colors: string[];
+    hasPartial: boolean;
+  }> = [];
+
+  boundaries.slice(0, -1).forEach((startX, index) => {
+    const endX = boundaries[index + 1];
+    if (endX - startX < 0.01) return;
+    const midpoint = (startX + endX) / 2;
+    const covering = plan.positions.filter(
+      (position) =>
+        position.x <= midpoint + 0.001 &&
+        position.x + position.w >= midpoint - 0.001,
+    );
+    if (!covering.length) return;
+    const details = covering
+      .map((position) => {
+        const blockIndex = plan.blocks.findIndex(
+          (block) => block.item.id === position.skuId,
+        );
+        const block = plan.blocks[blockIndex];
+        return {
+          code: block?.item.code || block?.item.name || position.skuId,
+          color: COLORS[Math.max(0, blockIndex) % COLORS.length],
+          height: position.stackBoxes * (block?.item.loadingUnit.h ?? 0),
+          levels: position.stackBoxes,
+          partial: Boolean(position.partialCartonEa),
+        };
+      })
+      .sort((a, b) => a.code.localeCompare(b.code));
+    const codes = [...new Set(details.map((detail) => detail.code))];
+    const colors = [...new Set(details.map((detail) => detail.color))];
+    const height = Math.max(...details.map((detail) => detail.height));
+    const levels = Math.max(...details.map((detail) => detail.levels));
+    const hasPartial = details.some((detail) => detail.partial);
+    const previous = slices.at(-1);
+    if (
+      previous &&
+      Math.abs(previous.endX - startX) < 0.01 &&
+      Math.abs(previous.height - height) < 0.01 &&
+      previous.levels === levels &&
+      previous.hasPartial === hasPartial &&
+      previous.codes.join("|") === codes.join("|")
+    ) {
+      previous.endX = endX;
+      return;
+    }
+    slices.push({
+      startX,
+      endX,
+      height,
+      levels,
+      codes,
+      colors,
+      hasPartial,
+    });
+  });
+
+  return (
+    <section className="mixed-side-view" aria-label={isEnglish ? "Longitudinal side view" : "纵向侧视图"}>
+      <h4>
+        <b>{isEnglish ? "LONGITUDINAL SIDE VIEW" : "纵向侧视图"}</b>
+        <span>
+          {isEnglish
+            ? `Length ${formatNumber(container.l)} mm · height ${formatNumber(container.h)} mm`
+            : `内长 ${formatNumber(container.l)} mm · 内高 ${formatNumber(container.h)} mm`}
+        </span>
+      </h4>
+      <div className="mixed-side-scroll">
+        <svg
+          className="mixed-side-frame"
+          viewBox={`0 0 ${container.l} ${container.h}`}
+          role="img"
+          aria-label={
+            isEnglish
+              ? "Container longitudinal height and stacking projection"
+              : "集装箱纵向高度与堆叠投影"
+          }
+        >
+          <defs>
+            {slices.map((slice, index) => (
+              <linearGradient
+                id={`side-slice-${plan.index}-${index}`}
+                key={index}
+                x1="0"
+                x2="1"
+              >
+                {slice.colors.flatMap((color, colorIndex) => [
+                  <stop
+                    key={`start-${color}-${colorIndex}`}
+                    offset={`${(colorIndex / slice.colors.length) * 100}%`}
+                    stopColor={color}
+                    stopOpacity=".28"
+                  />,
+                  <stop
+                    key={`end-${color}-${colorIndex}`}
+                    offset={`${((colorIndex + 1) / slice.colors.length) * 100}%`}
+                    stopColor={color}
+                    stopOpacity=".28"
+                  />,
+                ])}
+              </linearGradient>
+            ))}
+          </defs>
+          <rect width={container.l} height={container.h} fill="#f1f4f6" />
+          {slices.map((slice, index) => {
+            const top = container.h - slice.height;
+            const width = slice.endX - slice.startX;
+            const fontSize = Math.max(58, Math.min(width * 0.11, 105));
+            return (
+              <g key={`${slice.startX}-${slice.endX}-${index}`}>
+                <rect
+                  x={slice.startX}
+                  y={top}
+                  width={width}
+                  height={slice.height}
+                  fill={`url(#side-slice-${plan.index}-${index})`}
+                  stroke={slice.hasPartial ? "#c93228" : slice.colors[0]}
+                  strokeWidth={slice.hasPartial ? "15" : "8"}
+                  strokeDasharray={slice.hasPartial ? "36 20" : undefined}
+                />
+                <title>
+                  {slice.codes.join("+")} · ×{slice.levels} · {formatNumber(slice.height)} mm
+                </title>
+                {width >= 260 ? (
+                  <>
+                    <text
+                      x={slice.startX + width / 2}
+                      y={top + slice.height * 0.47}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fill="#17364c"
+                      fontSize={fontSize}
+                      fontWeight="800"
+                    >
+                      {slice.codes.join("+")}
+                    </text>
+                    <text
+                      x={slice.startX + width / 2}
+                      y={top + slice.height * 0.68}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fill="#466477"
+                      fontSize={fontSize * 0.82}
+                      fontWeight="700"
+                    >
+                      ×{slice.levels} · {formatNumber(slice.height)} mm
+                    </text>
+                  </>
+                ) : null}
+              </g>
+            );
+          })}
+          <rect
+            x={container.l - doorClearance}
+            y="0"
+            width={doorClearance}
+            height={container.h}
+            fill="#cc493d"
+            fillOpacity=".14"
+            stroke="#cc493d"
+            strokeWidth="12"
+            strokeDasharray="28 20"
+          />
+        </svg>
+      </div>
+      <div className="mixed-side-axis">
+        <span>{isEnglish ? "FRONT" : "箱头"}</span>
+        <b>{isEnglish ? "FLOOR · LOADING DIRECTION →" : "箱底 · 装柜方向 →"}</b>
+        <span>{isEnglish ? "DOOR" : "箱门"}</span>
+      </div>
+    </section>
   );
 }
 
@@ -542,6 +756,10 @@ function MixedPlanCanvas({
   const isEnglish = language === "en";
   return (
     <div className="mixed-plan-visual">
+      <h4 className="mixed-view-title">
+        <b>{isEnglish ? "TOP VIEW" : "俯视图"}</b>
+        <span>{isEnglish ? "Floor positions, orientation and door clearance" : "落地箱位、方向与箱门余量"}</span>
+      </h4>
       <div className="mixed-axis">
         <span>{isEnglish ? "FRONT · START" : "箱头 · 起点"}</span>
         <b>
@@ -703,6 +921,12 @@ function MixedPlanCanvas({
           </span>
         ))}
       </div>
+      <MixedSideView
+        plan={plan}
+        container={container}
+        doorClearance={doorClearance}
+        language={language}
+      />
       <MixedCrossSections
         plan={plan}
         container={container}
@@ -730,30 +954,12 @@ export default function MixedPlanner({
 }) {
   const isEnglish = language === "en";
   const tr = (zh: string, en: string) => (isEnglish ? en : zh);
-  const kitMessage = (message: string) => {
-    if (isEnglish) return message;
-    if (/No feasible kit quantity/i.test(message))
-      return "当前采购范围内不存在可行的齐套数量组合。";
-    if (/Every SKU requires an Item Group/i.test(message))
-      return "每一款参与优化的 SKU 都必须填写项次。";
-    if (/same SKU cannot appear more than once/i.test(message))
-      return "同一次齐套优化中，同一 SKU 不可重复录入。";
-    if (/procurement PCS quantities are not equal/i.test(message))
-      return message.replace(
-        /Item Group ([^:]+): procurement PCS quantities are not equal\.?/i,
-        "项次 $1：组内各 SKU 的产品数量（PCS）不一致。",
-      );
-    if (/Add at least one SKU/i.test(message))
-      return "请先录入至少一款有效 SKU。";
-    return message;
-  };
   const [inputMode, setInputMode] = useState<MixedInputMode>("material");
   const [rows, setRows] = useState<MixedRow[]>([
     emptyRow(1),
     emptyRow(2),
     emptyRow(3),
   ]);
-  const [activeParameterRowId, setActiveParameterRowId] = useState("mix-initial-1");
   const [containerType, setContainerType] = useState("40HQ");
   const [cartonTolerance, setCartonTolerance] = useState(3);
   const [cartonGap, setCartonGap] = useState(5);
@@ -774,28 +980,6 @@ export default function MixedPlanner({
   >("maximum");
   const [activeContainer, setActiveContainer] = useState(0);
   const [printError, setPrintError] = useState("");
-  const [kitContainerCount, setKitContainerCount] = useState(1);
-  const [kitMode, setKitMode] = useState<
-    "utilization" | "procurement" | "balanced"
-  >("utilization");
-  const [kitTopN, setKitTopN] = useState<10 | 20>(10);
-  const [kitConstraints, setKitConstraints] = useState<
-    Record<string, { min: number | ""; target: number | ""; max: number | ""; ratio: number | "" }>
-  >({});
-  const [kitCalculation, setKitCalculation] = useState<{
-    signature: string;
-    data: ReturnType<typeof optimizeKitPurchases>;
-  } | null>(null);
-  const [kitBusy, setKitBusy] = useState(false);
-  const [expandedKitRank, setExpandedKitRank] = useState<number | null>(null);
-  const [appliedKit, setAppliedKit] = useState<{
-    signature: string;
-    recommendation: ReturnType<typeof optimizeKitPurchases>["recommendations"][number];
-    groups: ReturnType<typeof optimizeKitPurchases>["groups"];
-    containerCount: number;
-    containerType: string;
-    mode: string;
-  } | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareExpiryDays, setShareExpiryDays] = useState("0");
   const [shareAccessCode, setShareAccessCode] = useState("");
@@ -812,14 +996,12 @@ export default function MixedPlanner({
       ...emptyRow(index + 1, `shared-${index + 1}`),
       ...row,
       id: `shared-${index + 1}`,
-      itemGroup: String(row.itemGroup ?? ""),
       series: String(row.series ?? ""),
       code: String(row.code ?? ""),
       name: String(row.name ?? ""),
       packaging: row.packaging === "pallet" ? "pallet" as const : "carton" as const,
     }));
     setRows(sharedRows.length ? sharedRows : [emptyRow(1)]);
-    setActiveParameterRowId(sharedRows[0]?.id ?? "mix-initial-1");
     setInputMode("manual");
     if (containers[payload.containerType]) setContainerType(payload.containerType);
     const config = payload.config ?? {};
@@ -843,7 +1025,6 @@ export default function MixedPlanner({
       setConfirmedLayoutStrategy("maximum");
     }
     setActiveContainer(0);
-    setAppliedKit(null);
   }, [containers]);
 
   const fetchSharedPlan = useCallback(async (accessCode = "") => {
@@ -902,47 +1083,10 @@ export default function MixedPlanner({
         return [
           {
             id: row.id,
-            itemGroup: row.itemGroup.trim(),
             series: row.series,
             code: row.code,
             name: row.name,
             productQuantity: Number(row.productQuantity),
-            eaPerBox: Number(row.eaPerBox),
-            carton: { l: Number(row.l), w: Number(row.w), h: Number(row.h) },
-            packaging: row.packaging,
-            pallet:
-              row.packaging === "pallet"
-                ? {
-                    l: Number(row.palletL),
-                    w: Number(row.palletW),
-                    h: Number(row.palletH),
-                  }
-                : undefined,
-            palletOverhang:
-              row.packaging === "pallet" ? Number(row.palletOverhang) : 0,
-          },
-        ];
-      }),
-    [rows],
-  );
-  const kitItems = useMemo(
-    () =>
-      rows.flatMap((row) => {
-        const required = [row.eaPerBox, row.l, row.w, row.h];
-        if (row.packaging === "pallet")
-          required.push(row.palletL, row.palletW, row.palletH);
-        if (
-          required.some((value) => value === "" || Number(value) <= 0) ||
-          (row.packaging === "pallet" && row.palletOverhang === "")
-        )
-          return [];
-        return [
-          {
-            id: row.id,
-            itemGroup: row.itemGroup.trim(),
-            series: row.series,
-            code: row.code,
-            name: row.name,
             eaPerBox: Number(row.eaPerBox),
             carton: { l: Number(row.l), w: Number(row.w), h: Number(row.h) },
             packaging: row.packaging,
@@ -1007,7 +1151,6 @@ export default function MixedPlanner({
     () =>
       rows.filter((row) => {
         const started = Boolean(
-          row.itemGroup ||
           row.series ||
           row.code ||
           row.name ||
@@ -1019,10 +1162,6 @@ export default function MixedPlanner({
     [rows, validItems],
   );
   const preflight = useMemo(() => validateMixedPlan(result), [result]);
-  const kitAssignmentPreflight = useMemo(
-    () => validateKitAssignments(validItems),
-    [validItems],
-  );
   const reportReady =
     validItems.length > 0 &&
     incompleteRows.length === 0 &&
@@ -1051,148 +1190,10 @@ export default function MixedPlanner({
       ),
     [products],
   );
-
-  const kitGroupIds = useMemo(
-    () => [
-      ...new Set(kitItems.map((item) => item.itemGroup).filter(Boolean)),
-    ].sort((left, right) => left.localeCompare(right, "zh-CN", { numeric: true })),
-    [kitItems],
-  );
-  const kitGroupDrafts = useMemo(
-    () =>
-      kitGroupIds.map((id) => {
-        const members = kitItems.filter((item) => item.itemGroup === id);
-        return { id, members, step: 1, error: "" };
-      }),
-    [kitGroupIds, kitItems],
-  );
-  const kitSignature = useMemo(
-    () =>
-      JSON.stringify({
-        items: kitItems,
-        containerType,
-        kitContainerCount,
-        kitMode,
-        kitTopN,
-        kitConstraints,
-        cartonTolerance,
-        cartonGap,
-        skuGap,
-        doorClearance,
-        sideClearance,
-        topClearance,
-        palletCartonGap,
-        palletGap,
-        palletTolerance,
-        edgeInset,
-        allowSkuInterlock,
-      }),
-    [
-      kitItems,
-      containerType,
-      kitContainerCount,
-      kitMode,
-      kitTopN,
-      kitConstraints,
-      cartonTolerance,
-      cartonGap,
-      skuGap,
-      doorClearance,
-      sideClearance,
-      topClearance,
-      palletCartonGap,
-      palletGap,
-      palletTolerance,
-      edgeInset,
-      allowSkuInterlock,
-    ],
-  );
-  const currentKitCalculation =
-    kitCalculation?.signature === kitSignature ? kitCalculation.data : null;
-  const currentAppliedKit =
-    appliedKit?.signature === kitSignature ? appliedKit : null;
-  const parameterRow = rows.find((row) => row.id === activeParameterRowId) ?? rows[0];
-  const parameterRowIndex = Math.max(0, rows.findIndex((row) => row.id === parameterRow?.id));
-
   const updateRow = (id: string, patch: Partial<MixedRow>) => {
     setRows((current) =>
       current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
     );
-    setAppliedKit(null);
-  };
-  const updateKitConstraint = (
-    groupId: string,
-    key: "min" | "target" | "max" | "ratio",
-    value: number | "",
-  ) =>
-    setKitConstraints((current) => ({
-      ...current,
-      [groupId]: {
-        min: current[groupId]?.min ?? "",
-        target: current[groupId]?.target ?? "",
-        max: current[groupId]?.max ?? "",
-        ratio: current[groupId]?.ratio ?? "",
-        [key]: value,
-      },
-    }));
-  const calculateKitRecommendations = () => {
-    setKitBusy(true);
-    setExpandedKitRank(null);
-    window.setTimeout(() => {
-      const data = optimizeKitPurchases(
-        kitItems,
-        container,
-        {
-          cartonTolerance,
-          cartonGap,
-          skuGap,
-          doorClearance,
-          sideClearance,
-          topClearance,
-          palletCartonGap,
-          palletGap,
-          palletTolerance,
-          edgeInset,
-          allowSkuInterlock,
-        },
-        {
-          containerCount: kitContainerCount,
-          topN: kitTopN,
-          mode: kitMode,
-          constraints: kitConstraints,
-        },
-      );
-      setKitCalculation({ signature: kitSignature, data });
-      setKitBusy(false);
-    }, 30);
-  };
-  const applyKitRecommendation = (
-    recommendation: ReturnType<typeof optimizeKitPurchases>["recommendations"][number],
-  ) => {
-    setRows((current) =>
-      current.map((row) => ({
-        ...row,
-        productQuantity:
-          recommendation.groupQuantities[row.itemGroup.trim()] ??
-          row.productQuantity,
-      })),
-    );
-    if (currentKitCalculation) {
-      setAppliedKit({
-        signature: kitSignature,
-        recommendation,
-        groups: currentKitCalculation.groups,
-        containerCount: kitContainerCount,
-        containerType,
-        mode: kitMode,
-      });
-    }
-    setActiveContainer(0);
-    window.setTimeout(() =>
-      document
-        .querySelector(".mixed-summary-grid")
-        ?.scrollIntoView({ behavior: "smooth", block: "start" }),
-    0);
   };
   const createSharedPlan = async () => {
     if (!reportReady) {
@@ -1285,8 +1286,6 @@ export default function MixedPlanner({
         .length ?? 0;
     const packagingRows =
       report?.querySelectorAll(".mixed-packaging-table tbody tr").length ?? 0;
-    const kitRows =
-      report?.querySelectorAll(".kit-selection-report tbody tr").length ?? 0;
     const palletPatternCount =
       report?.querySelectorAll(
         ".report-pallet-patterns .pallet-pattern-card",
@@ -1313,20 +1312,6 @@ export default function MixedPlanner({
           "Product-table row counts do not match valid SKUs.",
         ),
       );
-    const expectedKitRows = currentAppliedKit
-      ? currentAppliedKit.groups.reduce(
-          (sum, group) =>
-            sum + (currentAppliedKit.recommendation.groupRequirements[group.id]?.skuDetails.length ?? 0),
-          0,
-        )
-      : 0;
-    if (currentAppliedKit && kitRows !== expectedKitRows)
-      structureErrors.push(
-        tr(
-          "齐套采购组合表与 SKU 明细数量不一致。",
-          "Kit purchase table rows do not match the SKU details.",
-        ),
-      );
     if (palletPatternCount !== expectedPalletPatterns)
       structureErrors.push(
         tr(
@@ -1348,12 +1333,13 @@ export default function MixedPlanner({
       ).length;
       if (
         !section.querySelector(".mixed-plan-frame") ||
+        !section.querySelector(".mixed-side-view") ||
         !section.querySelector(".mixed-cross-section-wrap")
       )
         structureErrors.push(
           tr(
-            `第 ${index + 1} 柜缺少完整装载图或剖面图。`,
-            `Container ${index + 1} is missing a loading or section view.`,
+            `第 ${index + 1} 柜缺少俯视、纵向侧视或横向端视图。`,
+            `Container ${index + 1} is missing its top, longitudinal side or transverse end view.`,
           ),
         );
       if (allocationRows !== expectedBlocks)
@@ -1770,7 +1756,6 @@ export default function MixedPlanner({
               <button
                 onClick={() => {
                   setRows([emptyRow(1), emptyRow(2), emptyRow(3)]);
-                  setActiveParameterRowId("mix-initial-1");
                 }}
               >
                 {tr("清空", "Clear")}
@@ -1788,7 +1773,6 @@ export default function MixedPlanner({
                 if (inputMode !== "material") {
                   setInputMode("material");
                   setRows([emptyRow(1), emptyRow(2), emptyRow(3)]);
-                  setActiveParameterRowId("mix-initial-1");
                   setActiveContainer(0);
                 }
               }}
@@ -1807,7 +1791,6 @@ export default function MixedPlanner({
                 if (inputMode !== "manual") {
                   setInputMode("manual");
                   setRows([emptyRow(1), emptyRow(2), emptyRow(3)]);
-                  setActiveParameterRowId("mix-initial-1");
                   setActiveContainer(0);
                 }
               }}
@@ -1829,142 +1812,22 @@ export default function MixedPlanner({
               )}
             </div>
           ) : null}
-          {parameterRow ? (
-            <section className="sku-parameter-panel" aria-label={tr("SKU 包装参数", "SKU packaging parameters")}>
-              <header>
-                <div>
-                  <b>{tr("SKU 参数设置", "SKU PARAMETER SETTINGS")}</b>
-                  <span>{tr("列表仅保留业务录入；包装技术参数在此集中维护", "The grid stays concise; packaging parameters are maintained here")}</span>
-                </div>
-                <label>
-                  {tr("当前行", "Active row")}
-                  <select
-                    aria-label={tr("选择参数行", "Select parameter row")}
-                    value={parameterRow.id}
-                    onChange={(event) => setActiveParameterRowId(event.target.value)}
-                  >
-                    {rows.map((row, index) => (
-                      <option key={row.id} value={row.id}>
-                        {index + 1} · {row.code || row.name || tr("未命名 SKU", "Unnamed SKU")}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </header>
-              <div className="sku-parameter-grid">
-                <label>
-                  <span>EA/BOX</span>
-                  <input
-                    aria-label="EA/BOX"
-                    type="number"
-                    min="1"
-                    disabled={inputMode === "material"}
-                    value={parameterRow.eaPerBox}
-                    onChange={(event) =>
-                      updateRow(parameterRow.id, {
-                        eaPerBox: event.target.value === "" ? "" : Math.max(1, Math.floor(Number(event.target.value))),
-                      })
-                    }
-                  />
-                  {inputMode === "material" ? <small>{tr("主数据锁定", "Master data locked")}</small> : null}
-                </label>
-                <label className="sku-parameter-dimensions">
-                  <span>{tr("外箱尺寸 L×W×H (mm)", "Carton L×W×H (mm)")}</span>
-                  <div className="mixed-dimensions">
-                    {(["l", "w", "h"] as const).map((key) => (
-                      <input
-                        key={key}
-                        aria-label={`${tr("外箱", "Carton")} ${key.toUpperCase()} mm`}
-                        type="number"
-                        min="10"
-                        disabled={inputMode === "material"}
-                        value={parameterRow[key]}
-                        onChange={(event) =>
-                          updateRow(parameterRow.id, {
-                            [key]: event.target.value === "" ? "" : Math.max(10, Number(event.target.value)),
-                          })
-                        }
-                      />
-                    ))}
-                  </div>
-                  {inputMode === "material" ? <small>{tr("主数据锁定", "Master data locked")}</small> : null}
-                </label>
-                <label>
-                  <span>{tr("包装方式", "Packaging")}</span>
-                  <select
-                    aria-label={tr("参数包装方式", "Parameter packaging method")}
-                    value={parameterRow.packaging}
-                    disabled={inputMode === "material" && !parameterRow.code}
-                    onChange={(event) =>
-                      updateRow(parameterRow.id, {
-                        packaging: event.target.value === "pallet" ? "pallet" : "carton",
-                      })
-                    }
-                  >
-                    <option value="carton">{tr("纸箱", "Carton")}</option>
-                    <option value="pallet">{tr("托盘", "Pallet")}</option>
-                  </select>
-                </label>
-                {parameterRow.packaging === "pallet" ? (
-                  <>
-                    <label className="sku-parameter-dimensions">
-                      <span>{tr("托盘尺寸 L×W×H (mm)", "Pallet L×W×H (mm)")}</span>
-                      <div className="mixed-dimensions">
-                        {(["palletL", "palletW", "palletH"] as const).map((key, dimensionIndex) => (
-                          <input
-                            key={key}
-                            aria-label={`${tr("托盘", "Pallet")} ${["L", "W", "H"][dimensionIndex]} mm`}
-                            type="number"
-                            min="10"
-                            value={parameterRow[key]}
-                            onChange={(event) =>
-                              updateRow(parameterRow.id, {
-                                [key]: event.target.value === "" ? "" : Math.max(10, Number(event.target.value)),
-                              })
-                            }
-                          />
-                        ))}
-                      </div>
-                    </label>
-                    <label>
-                      <span>{tr("允许外伸 mm/边", "Allowed overhang mm/side")}</span>
-                      <input
-                        aria-label={tr("纸箱允许超出托盘边界毫米/边", "Allowed carton overhang beyond pallet mm per side")}
-                        type="number"
-                        min="0"
-                        max="200"
-                        value={parameterRow.palletOverhang}
-                        onChange={(event) =>
-                          updateRow(parameterRow.id, {
-                            palletOverhang: event.target.value === "" ? "" : Math.max(0, Math.min(200, Number(event.target.value))),
-                          })
-                        }
-                      />
-                    </label>
-                  </>
-                ) : null}
-              </div>
-              <footer>
-                <span>{tr(`第 ${parameterRowIndex + 1} 行`, `Row ${parameterRowIndex + 1}`)}</span>
-                <b>{parameterRow.code || "—"} · {parameterRow.name || tr("未填写品名", "Product name not entered")}</b>
-                <em>{parameterRow.l || "—"} × {parameterRow.w || "—"} × {parameterRow.h || "—"} mm · {parameterRow.eaPerBox || "—"} EA/BOX</em>
-              </footer>
-            </section>
-          ) : null}
           <div className="mixed-grid-scroll">
             <table className="mixed-entry-grid">
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>{tr("项次", "Item Group")}</th>
                   <th>{tr("系列", "Series")}</th>
-                  <th>{tr("产品代码", "Product code")}</th>
-                  <th>{tr("品名规格", "Product / specification")}</th>
+                  <th>{tr("产品代码 / 品名规格", "Code / Product")}</th>
                   <th>{tr("产品数量", "Product quantity")}</th>
+                  <th>{tr("装箱数量 EA/BOX", "PACK QTY EA/BOX")}</th>
+                  <th>{tr("外箱 L×W×H", "Carton L×W×H")}</th>
+                  <th>{tr("包装", "Pack")}</th>
+                  <th>{tr("托盘 L×W×H / 外伸", "Pallet L×W×H / OH")}</th>
                   <th>{tr("总箱数", "Total cartons")}</th>
                   <th>{tr("CBM 材积", "Packaging CBM")}</th>
                   <th>{tr("尾箱数量", "Last-carton quantity")}</th>
-                  <th>{tr("操作", "Action")}</th>
+                  <th aria-label={tr("操作", "Action")} />
                 </tr>
               </thead>
               <tbody>
@@ -1986,24 +1849,9 @@ export default function MixedPlanner({
                     (product) => product.family === row.series,
                   );
                   return (
-                    <tr
-                      key={row.id}
-                      className={`${boxes ? "valid-row " : ""}${parameterRow?.id === row.id ? "parameter-selected" : ""}`}
-                      onClick={() => setActiveParameterRowId(row.id)}
-                    >
-                      <td className="row-index">{index + 1}</td>
-                      <td>
-                        <input
-                          className="item-group-input"
-                          aria-label={tr("项次", "Item Group")}
-                          value={row.itemGroup}
-                          placeholder={tr("如 1", "e.g. 1")}
-                          onChange={(event) =>
-                            updateRow(row.id, { itemGroup: event.target.value })
-                          }
-                        />
-                      </td>
-                      <td>
+                    <tr key={row.id} className={boxes ? "valid-row" : ""}>
+                      <td className="row-index" data-label="#">{index + 1}</td>
+                      <td data-label={tr("系列", "Series")}>
                         {inputMode === "material" ? (
                           <select
                             aria-label={tr("选择系列", "Select series")}
@@ -2031,57 +1879,53 @@ export default function MixedPlanner({
                           />
                         )}
                       </td>
-                      <td>
+                      <td className="mixed-product-cell" data-label={tr("产品代码 / 品名规格", "Code / Product")}>
                         {inputMode === "material" ? (
-                          <select
-                            aria-label={tr(
-                              "选择产品代码并核对品名",
-                              "Select product code and verify name",
-                            )}
-                            value={row.code}
-                            disabled={!row.series}
-                            onChange={(event) =>
-                              selectProduct(row.id, event.target.value)
-                            }
-                          >
-                            <option value="">
-                              {tr("选择代码 · 品名", "Select code · name")}
-                            </option>
-                            {availableProducts.map((product) => (
-                              <option key={product.code} value={product.code}>
-                                {product.code} · {product.name}
+                          <>
+                            <select
+                              aria-label={tr(
+                                "选择产品代码并核对品名",
+                                "Select product code and verify name",
+                              )}
+                              value={row.code}
+                              disabled={!row.series}
+                              onChange={(event) =>
+                                selectProduct(row.id, event.target.value)
+                              }
+                            >
+                              <option value="">
+                                {tr("选择代码 · 品名", "Select code · name")}
                               </option>
-                            ))}
-                          </select>
+                              {availableProducts.map((product) => (
+                                <option key={product.code} value={product.code}>
+                                  {product.code} · {product.name}
+                                </option>
+                              ))}
+                            </select>
+                            <span className="product-name-confirm" title={row.name}>{row.name || "—"}</span>
+                          </>
                         ) : (
-                          <input
-                            aria-label={tr("产品代码", "Product code")}
-                            value={row.code}
-                            onChange={(event) =>
-                              updateRow(row.id, { code: event.target.value })
-                            }
-                          />
+                          <>
+                            <input
+                              aria-label={tr("产品代码", "Product code")}
+                              placeholder={tr("代码", "Code")}
+                              value={row.code}
+                              onChange={(event) =>
+                                updateRow(row.id, { code: event.target.value })
+                              }
+                            />
+                            <input
+                              aria-label={tr("品名规格", "Product / specification")}
+                              placeholder={tr("品名规格", "Product")}
+                              value={row.name}
+                              onChange={(event) =>
+                                updateRow(row.id, { name: event.target.value })
+                              }
+                            />
+                          </>
                         )}
                       </td>
-                      <td>
-                        {inputMode === "material" ? (
-                          <span className="master-readonly" title={row.name}>
-                            {row.name || "—"}
-                          </span>
-                        ) : (
-                          <input
-                            aria-label={tr(
-                              "品名规格",
-                              "Product / specification",
-                            )}
-                            value={row.name}
-                            onChange={(event) =>
-                              updateRow(row.id, { name: event.target.value })
-                            }
-                          />
-                        )}
-                      </td>
-                      <td>
+                      <td data-label={tr("产品数量", "Product quantity")}>
                         <input
                           aria-label={tr("产品数量", "Product quantity")}
                           type="number"
@@ -2100,50 +1944,129 @@ export default function MixedPlanner({
                           }
                         />
                       </td>
-                      <td className="calculated-cell">
+                      <td data-label={tr("装箱数量 EA/BOX", "Pack quantity EA/BOX")}>
+                        <input
+                          aria-label="EA/BOX"
+                          type="number"
+                          min="1"
+                          disabled={inputMode === "material"}
+                          value={row.eaPerBox}
+                          onChange={(event) =>
+                            updateRow(row.id, {
+                              eaPerBox: event.target.value === "" ? "" : Math.max(1, Math.floor(Number(event.target.value))),
+                            })
+                          }
+                        />
+                      </td>
+                      <td data-label={tr("外箱 L×W×H (mm)", "Carton L×W×H (mm)")}>
+                        <div className="inline-dimensions" aria-label={tr("外箱尺寸", "Carton dimensions")}>
+                          {(["l", "w", "h"] as const).map((key) => (
+                            <label key={key}>
+                              <span>{key.toUpperCase()}</span>
+                              <input
+                                aria-label={`${tr("外箱", "Carton")} ${key.toUpperCase()} mm`}
+                                type="number"
+                                min="10"
+                                disabled={inputMode === "material"}
+                                value={row[key]}
+                                onChange={(event) =>
+                                  updateRow(row.id, {
+                                    [key]: event.target.value === "" ? "" : Math.max(10, Number(event.target.value)),
+                                  })
+                                }
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      </td>
+                      <td data-label={tr("包装方式", "Packaging")}>
+                        <select
+                          aria-label={tr("包装方式", "Packaging method")}
+                          value={row.packaging}
+                          disabled={inputMode === "material" && !row.code}
+                          onChange={(event) =>
+                            updateRow(row.id, {
+                              packaging: event.target.value === "pallet" ? "pallet" : "carton",
+                            })
+                          }
+                        >
+                          <option value="carton">{tr("纸箱", "Carton")}</option>
+                          <option value="pallet">{tr("托盘", "Pallet")}</option>
+                        </select>
+                      </td>
+                      <td data-label={tr("托盘 L×W×H / 外伸 (mm)", "Pallet L×W×H / overhang (mm)")}>
+                        {row.packaging === "pallet" ? (
+                          <div className="inline-dimensions pallet-inline-dimensions" aria-label={tr("托盘尺寸及外伸", "Pallet dimensions and overhang")}>
+                            {(["palletL", "palletW", "palletH"] as const).map((key, dimensionIndex) => (
+                              <label key={key}>
+                                <span>{["L", "W", "H"][dimensionIndex]}</span>
+                                <input
+                                  aria-label={`${tr("托盘", "Pallet")} ${["L", "W", "H"][dimensionIndex]} mm`}
+                                  type="number"
+                                  min="10"
+                                  value={row[key]}
+                                  onChange={(event) =>
+                                    updateRow(row.id, {
+                                      [key]: event.target.value === "" ? "" : Math.max(10, Number(event.target.value)),
+                                    })
+                                  }
+                                />
+                              </label>
+                            ))}
+                            <label>
+                              <span>OH</span>
+                              <input
+                                aria-label={tr("纸箱允许超出托盘边界毫米/边", "Allowed carton overhang beyond pallet mm per side")}
+                                type="number"
+                                min="0"
+                                max="200"
+                                value={row.palletOverhang}
+                                onChange={(event) =>
+                                  updateRow(row.id, {
+                                    palletOverhang: event.target.value === "" ? "" : Math.max(0, Math.min(200, Number(event.target.value))),
+                                  })
+                                }
+                              />
+                            </label>
+                          </div>
+                        ) : (
+                          <span className="not-applicable">—</span>
+                        )}
+                      </td>
+                      <td className="calculated-cell" data-label={tr("总箱数", "Total cartons")}>
                         <strong>{boxes ? formatNumber(boxes) : "—"}</strong>
                         <small>BOX</small>
                       </td>
-                      <td className="calculated-cell cbm-cell">
+                      <td className="calculated-cell cbm-cell" data-label={tr("CBM 材积", "Packaging CBM")}>
                         <strong>
                           {packagingCbm ? formatNumber(packagingCbm, 2) : "—"}
                         </strong>
                         <small>CBM</small>
                       </td>
-                      <td className="last-carton-cell">
+                      <td className="last-carton-cell" data-label={tr("尾箱数量", "Last-carton quantity")}>
                         {boxes
                           ? remainder
                             ? tr(`${remainder} EA`, `${remainder} EA`)
                             : tr("0 EA（无尾箱）", "0 EA (NONE)")
                           : "—"}
                       </td>
-                      <td>
-                        <div className="mixed-row-actions">
-                          <button
-                            type="button"
-                            className="parameter-row-button"
-                            onClick={() => setActiveParameterRowId(row.id)}
-                          >
-                            {tr("参数", "Params")}
-                          </button>
-                          <button
-                            className="delete-row"
-                            aria-label={tr(
-                              `删除第 ${index + 1} 行`,
-                              `Delete row ${index + 1}`,
-                            )}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setRows((current) =>
-                                current.length === 1
-                                  ? [emptyRow(1)]
-                                  : current.filter((item) => item.id !== row.id),
-                              );
-                            }}
-                          >
-                            ×
-                          </button>
-                        </div>
+                      <td data-label={tr("操作", "Action")}>
+                        <button
+                          className="delete-row"
+                          aria-label={tr(
+                            `删除第 ${index + 1} 行`,
+                            `Delete row ${index + 1}`,
+                          )}
+                          onClick={() =>
+                            setRows((current) =>
+                              current.length === 1
+                                ? [emptyRow(1)]
+                                : current.filter((item) => item.id !== row.id),
+                            )
+                          }
+                        >
+                          ×
+                        </button>
                       </td>
                     </tr>
                   );
@@ -2153,8 +2076,8 @@ export default function MixedPlanner({
           </div>
           <p className="mixed-grid-note">
             {tr(
-              "相同项次仅按产品数量（PCS）是否一致判断齐套；产品数量不要求是 EA/BOX 的倍数。系统向上计算箱数，尾箱按完整箱位、置顶固定、禁止受压。",
-              "Kit status is determined only by equal product quantity (PCS) within the same Item Group. Quantity need not be a multiple of EA/BOX. Cartons are rounded up and a partial carton reserves one full top position without load above.",
+              "系统按订单产品数量向上计算箱数；产品数量无需是 EA/BOX 的倍数，尾箱按完整箱位、置顶固定、禁止受压。",
+              "Cartons are rounded up from ordered product quantities. Quantity need not be a multiple of EA/BOX; a partial carton reserves one full top position without load above.",
             )}
           </p>
           {rows.some((row) => row.packaging === "pallet") ? (
@@ -2179,355 +2102,12 @@ export default function MixedPlanner({
               ) : null}
             </div>
           ) : null}
-          {!kitAssignmentPreflight.ok ? (
-            <div className="mixed-error kit-assignment-error">
-              <b>{tr("齐套数量不一致 · 不阻断装柜", "KIT QTY MISMATCH · LOADING CONTINUES")}</b>
-              <span>
-                {kitAssignmentPreflight.errors.map(kitMessage).join("；")}
-              </span>
-            </div>
-          ) : kitAssignmentPreflight.groupCount ? (
-            <div className="kit-assignment-pass">
-              <b>{tr("齐套校验通过", "KIT CHECK PASSED")}</b>
-              <span>{tr("同项次 SKU 的产品数量（PCS）一致；包装规格仅用于计算总箱数与尾箱。", "PCS quantities are equal within each Item Group; packaging data is used only to calculate cartons and partial cartons.")}</span>
-            </div>
-          ) : null}
         </div>
-
-        <section className="kit-optimizer panel" aria-labelledby="kit-title">
-          <div className="mixed-section-heading kit-heading">
-            <div>
-              <p className="section-kicker">02 · KIT OPTIMIZER</p>
-              <h3 id="kit-title">
-                {tr(
-                  "齐套项次 · 多 SKU 采购组合推荐",
-                  "Item Group · Multi-SKU Purchase Recommendations",
-                )}
-              </h3>
-            </div>
-            {currentAppliedKit ? (
-              <span className="kit-applied-badge">
-                {tr(
-                  `已采用方案 ${currentAppliedKit.recommendation.rank}`,
-                  `Recommendation ${currentAppliedKit.recommendation.rank} applied`,
-                )}
-              </span>
-            ) : null}
-          </div>
-
-          <div className="kit-control-row">
-            <label>
-              {tr("柜型", "Container")}
-              <strong>{containerType}</strong>
-            </label>
-            <label>
-              {tr("集装箱数量", "No. of containers")}
-              <input
-                aria-label={tr("集装箱数量", "Number of containers")}
-                type="number"
-                min="1"
-                max="100"
-                value={kitContainerCount}
-                onChange={(event) =>
-                  setKitContainerCount(
-                    Math.max(1, Math.min(100, Math.floor(Number(event.target.value) || 1))),
-                  )
-                }
-              />
-            </label>
-            <label>
-              {tr("推荐模式", "Recommendation mode")}
-              <select
-                value={kitMode}
-                onChange={(event) =>
-                  setKitMode(
-                    event.target.value as
-                      | "utilization"
-                      | "procurement"
-                      | "balanced",
-                  )
-                }
-              >
-                <option value="utilization">
-                  {tr("最大装载率", "Maximum Utilization")}
-                </option>
-                <option value="procurement">
-                  {tr("最大采购数量", "Maximum Procurement Qty")}
-                </option>
-                <option value="balanced">
-                  {tr("目标比例均衡", "Balanced Mix")}
-                </option>
-              </select>
-            </label>
-            <label>
-              {tr("推荐数量", "Recommendations")}
-              <select
-                value={kitTopN}
-                onChange={(event) =>
-                  setKitTopN(Number(event.target.value) === 20 ? 20 : 10)
-                }
-              >
-                <option value="10">Top 10</option>
-                <option value="20">Top 20</option>
-              </select>
-            </label>
-            <button
-              className="primary kit-calculate"
-              disabled={kitBusy || kitItems.length === 0}
-              onClick={calculateKitRecommendations}
-            >
-              {kitBusy
-                ? tr("正在验柜…", "Verifying…")
-                : tr("计算并逐案验柜", "Calculate & Verify")}
-            </button>
-          </div>
-
-          <div className="kit-constraint-scroll">
-            <table className="kit-constraint-table">
-              <thead>
-                <tr>
-                  <th>{tr("项次", "Item Group")}</th>
-                  <th>SKU</th>
-                  <th>{tr("数量规则", "Quantity rule")}</th>
-                  <th>{tr("最小数量", "Minimum Qty")}</th>
-                  <th>{tr("目标数量", "Target Qty")}</th>
-                  <th>{tr("最大数量", "Maximum Qty")}</th>
-                  <th>{tr("目标比例", "Target Mix")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {kitGroupDrafts.length ? (
-                  kitGroupDrafts.map((group) => (
-                    <tr key={group.id}>
-                      <td><b>{group.id}</b></td>
-                      <td title={group.members.map((item) => item.code || item.name).join(" · ")}>
-                        {group.members.length} SKU
-                        <small>
-                          {group.members.map((item) => item.code || item.name || "—").join(" · ")}
-                        </small>
-                      </td>
-                      <td>
-                        <b>{tr("任意整数 PCS", "ANY INTEGER PCS")}</b>
-                        <small>{tr("允许尾箱", "Partial cartons allowed")}</small>
-                        {group.error ? <small>{kitMessage(group.error)}</small> : null}
-                      </td>
-                      {(["min", "target", "max"] as const).map((key) => (
-                        <td key={key}>
-                          <input
-                            aria-label={`${group.id} ${key}`}
-                            type="number"
-                            min="0"
-                            step={group.step || 1}
-                            placeholder={tr("自动", "Auto")}
-                            value={kitConstraints[group.id]?.[key] ?? ""}
-                            onChange={(event) =>
-                              updateKitConstraint(
-                                group.id,
-                                key,
-                                event.target.value === ""
-                                  ? ""
-                                  : Math.max(0, Math.floor(Number(event.target.value))),
-                              )
-                            }
-                          />
-                        </td>
-                      ))}
-                      <td>
-                        <div className="kit-ratio-input">
-                          <input
-                            aria-label={`${group.id} ratio`}
-                            type="number"
-                            min="0"
-                            max="100"
-                            placeholder={tr("等比", "Equal")}
-                            value={kitConstraints[group.id]?.ratio ?? ""}
-                            onChange={(event) =>
-                              updateKitConstraint(
-                                group.id,
-                                "ratio",
-                                event.target.value === ""
-                                  ? ""
-                                  : Math.max(0, Math.min(100, Number(event.target.value))),
-                              )
-                            }
-                          />
-                          <span>%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={7} className="kit-empty-row">
-                      {tr(
-                        "请在产品清单填写项次与完整包装参数。",
-                        "Enter Item Group and complete packaging data in the product grid.",
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {kitCalculation && !currentKitCalculation ? (
-            <div className="kit-stale-note">
-              {tr(
-                "输入或约束已变化，请重新计算推荐方案。",
-                "Inputs or constraints changed; recalculate recommendations.",
-              )}
-            </div>
-          ) : null}
-          {currentKitCalculation?.errors.length ? (
-            <div className="mixed-error kit-error">
-              <b>{tr("无可行组合", "NO FEASIBLE COMBINATION")}</b>
-              <span>
-                {currentKitCalculation.errors.map(kitMessage).join("；")}
-              </span>
-            </div>
-          ) : null}
-          {currentKitCalculation?.warnings.length ? (
-            <div className="kit-warning">
-              {currentKitCalculation.warnings.map(kitMessage).join("；")}
-            </div>
-          ) : null}
-
-          {currentKitCalculation?.recommendations.length ? (
-            <div className="kit-results">
-              <div className="kit-result-meta">
-                <b>
-                  {tr(
-                    `${containerType} × ${kitContainerCount} · ${currentKitCalculation.recommendations.length} 个已验证方案`,
-                    `${containerType} × ${kitContainerCount} · ${currentKitCalculation.recommendations.length} verified plans`,
-                  )}
-                </b>
-                <span>
-                  {tr(
-                    `整数搜索 ${currentKitCalculation.searchStrategy} · 真实排箱复核 ${currentKitCalculation.actualAudits ?? 0} 案`,
-                    `Integer search ${currentKitCalculation.searchStrategy} · ${currentKitCalculation.actualAudits ?? 0} physical plans audited`,
-                  )}
-                </span>
-              </div>
-              <div className="kit-recommendation-scroll">
-                <table className="kit-recommendation-table">
-                  <thead>
-                    <tr>
-                      <th>Rank</th>
-                      {currentKitCalculation.groups.map((group) => (
-                        <th key={group.id}>{tr(`项次 ${group.id}`, `Group ${group.id}`)}</th>
-                      ))}
-                      <th>{tr("总箱数", "Total CTN")}</th>
-                      <th>CBM</th>
-                      <th>{tr("实际柜数", "Containers")}</th>
-                      <th>{tr("装载率", "Utilization")}</th>
-                      {kitMode === "balanced" ? <th>{tr("比例偏差", "Mix deviation")}</th> : null}
-                      <th>{tr("操作", "Action")}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {currentKitCalculation.recommendations.map((recommendation) => (
-                      <tr
-                        key={recommendation.rank}
-                        className={
-                          currentAppliedKit?.recommendation.rank === recommendation.rank
-                            ? "applied"
-                            : ""
-                        }
-                      >
-                        <td><b>{String(recommendation.rank).padStart(2, "0")}</b></td>
-                        {currentKitCalculation.groups.map((group) => (
-                          <td key={group.id}>
-                            <b>{formatNumber(recommendation.groupQuantities[group.id])}</b>
-                            <small>PCS · {tr("允许尾箱", "partial cartons allowed")}</small>
-                          </td>
-                        ))}
-                        <td>{formatNumber(recommendation.totalCartons)} CTN</td>
-                        <td>{formatNumber(recommendation.totalCbm, 2)}</td>
-                        <td>{recommendation.containersUsed} / {recommendation.requestedContainers}</td>
-                        <td><strong>{formatNumber(recommendation.utilization, 1)}%</strong></td>
-                        {kitMode === "balanced" ? (
-                          <td>{formatNumber(recommendation.ratioDeviation * 100, 1)}%</td>
-                        ) : null}
-                        <td>
-                          <div className="kit-row-actions">
-                            <button
-                              onClick={() =>
-                                setExpandedKitRank(
-                                  expandedKitRank === recommendation.rank
-                                    ? null
-                                    : recommendation.rank,
-                                )
-                              }
-                            >
-                              {expandedKitRank === recommendation.rank
-                                ? tr("收起", "Close")
-                                : tr("明细", "Details")}
-                            </button>
-                            <button
-                              className="primary"
-                              onClick={() => applyKitRecommendation(recommendation)}
-                            >
-                              {tr("采用", "Apply")}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {expandedKitRank ? (() => {
-                const recommendation = currentKitCalculation.recommendations.find(
-                  (entry) => entry.rank === expandedKitRank,
-                );
-                if (!recommendation) return null;
-                return (
-                  <div className="kit-detail-grid">
-                    {currentKitCalculation.groups.map((group) => {
-                      const requirement = recommendation.groupRequirements[group.id];
-                      return (
-                        <article key={group.id}>
-                          <header>
-                            <b>{tr(`项次 ${group.id}`, `Item Group ${group.id}`)}</b>
-                            <strong>{formatNumber(requirement.quantity)} PCS</strong>
-                            <span>{tr("任意整数 PCS · 箱数向上取整", "ANY INTEGER PCS · CARTONS ROUND UP")}</span>
-                          </header>
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>SKU</th>
-                                <th>PCS</th>
-                                <th>CTN</th>
-                                <th>{tr("尾箱", "Tail")}</th>
-                                <th>CBM</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {requirement.skuDetails.map((detail) => (
-                                <tr key={detail.id}>
-                                  <td><b>{detail.code || "—"}</b><span>{detail.name}</span></td>
-                                  <td>{formatNumber(detail.quantity)}</td>
-                                  <td>{formatNumber(detail.cartons)}</td>
-                                  <td>{detail.partialCartonEa ? `${formatNumber(detail.partialCartonEa)} EA` : "—"}</td>
-                                  <td>{formatNumber(detail.cbm, 3)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </article>
-                      );
-                    })}
-                  </div>
-                );
-              })() : null}
-            </div>
-          ) : null}
-        </section>
 
         <section className="layout-choice panel" aria-labelledby="layout-choice-title">
           <div className="layout-choice-heading">
             <div>
-              <p className="section-kicker">03 · LAYOUT OPTIONS</p>
+              <p className="section-kicker">02 · LAYOUT OPTIONS</p>
               <h3 id="layout-choice-title">{tr("装柜排布方案 · 客户确认", "LOADING LAYOUT · CUSTOMER CONFIRMATION")}</h3>
             </div>
             <span>{tr("所有方案均经过边界、间隙、高度与不重叠校验", "Every option is checked for boundaries, gaps, height and non-overlap")}</span>
@@ -2652,7 +2232,7 @@ export default function MixedPlanner({
           <div className="mixed-result panel">
             <div className="mixed-section-heading">
               <div>
-                <p className="section-kicker">04 · PLAN</p>
+                <p className="section-kicker">03 · PLAN</p>
                 <h3>
                   {tr(
                     "分柜结果与装载分区",
@@ -2752,7 +2332,6 @@ export default function MixedPlanner({
                 <thead>
                   <tr>
                     <th>{tr("装柜顺序", "Sequence")}</th>
-                    <th>{tr("项次", "Item Group")}</th>
                     <th>{tr("系列", "Series")}</th>
                     <th>
                       {tr(
@@ -2774,7 +2353,6 @@ export default function MixedPlanner({
                   {selectedPlan.blocks.map((block, index) => (
                     <tr key={block.item.id}>
                       <td>{String(index + 1).padStart(2, "0")}</td>
-                      <td>{block.item.itemGroup || "—"}</td>
                       <td>{block.item.series || "—"}</td>
                       <td>
                         <b>{block.item.code || "—"}</b>
@@ -2909,7 +2487,6 @@ export default function MixedPlanner({
               <dt>{tr("软件 / 算法", "Software / Algorithm")}</dt>
               <dd>
                 v{appVersion} / MIX 1.5
-                {kitAssignmentPreflight.groupCount ? " · KIT 1.1" : ""}
               </dd>
             </div>
             <div>
@@ -2997,74 +2574,9 @@ export default function MixedPlanner({
                 : tr("清晰分区", "CLEAR SKU ZONES")}
           </span>
         </div>
-        <div className={`report-kit-status ${kitAssignmentPreflight.ok ? "pass" : "warning"}`}>
-          <b>{kitAssignmentPreflight.ok
-            ? tr("齐套校验：通过", "KIT CHECK: PASS")
-            : tr("齐套数量：不一致（不影响装柜计算）", "KIT QTY: MISMATCH (LOADING CALCULATION CONTINUES)")}</b>
-          <span>{kitAssignmentPreflight.ok
-            ? tr("同项次各 SKU 的产品数量（PCS）一致；产品数量无需匹配 EA/BOX，箱数向上取整并标识尾箱。", "PCS quantities are equal within each Item Group. Quantities need not match EA/BOX; cartons round up and partial cartons are identified.")
-            : kitAssignmentPreflight.errors.map(kitMessage).join("；")}</span>
-        </div>
-        {currentAppliedKit ? (
-          <section className="report-section kit-selection-report">
-            <h2>
-              <span>01</span>
-              {tr(
-                "齐套采购组合与验柜结论",
-                "KIT PURCHASE COMBINATION & PHYSICAL VERIFICATION",
-              )}
-            </h2>
-            <div className="report-result-line">
-              <b>
-                {currentAppliedKit.containerType} × {currentAppliedKit.containerCount}
-              </b>
-              <span>
-                {tr("推荐方案", "RECOMMENDATION")} {currentAppliedKit.recommendation.rank}
-              </span>
-              <span>{formatNumber(currentAppliedKit.recommendation.totalCartons)} CTN</span>
-              <span>{formatNumber(currentAppliedKit.recommendation.totalCbm, 2)} CBM</span>
-              <span>
-                {tr("装载率", "UTILIZATION")} {formatNumber(currentAppliedKit.recommendation.utilization, 1)}%
-              </span>
-              <strong>
-                {tr("真实排箱复核：通过", "PHYSICAL LOADING AUDIT: PASS")}
-              </strong>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>{tr("项次", "Item Group")}</th>
-                  <th>{tr("齐套产品数量", "Kit quantity")}</th>
-                  <th>{tr("数量规则", "Quantity Rule")}</th>
-                  <th>SKU</th>
-                  <th>{tr("箱数", "CTN")}</th>
-                  <th>{tr("尾箱", "Tail carton")}</th>
-                  <th>CBM</th>
-                </tr>
-              </thead>
-              <tbody>
-                {currentAppliedKit.groups.map((group) => {
-                  const requirement =
-                    currentAppliedKit.recommendation.groupRequirements[group.id];
-                  return requirement.skuDetails.map((detail, detailIndex) => (
-                    <tr key={`${group.id}-${detail.id}`}>
-                      {detailIndex === 0 ? <td rowSpan={requirement.skuDetails.length}><b>{group.id}</b></td> : null}
-                      {detailIndex === 0 ? <td rowSpan={requirement.skuDetails.length}>{formatNumber(requirement.quantity)} PCS</td> : null}
-                      {detailIndex === 0 ? <td rowSpan={requirement.skuDetails.length}>{tr("任意整数 PCS · 允许尾箱", "ANY INTEGER PCS · PARTIAL CTN ALLOWED")}</td> : null}
-                      <td><b>{detail.code || "—"}</b><span>{detail.name}</span></td>
-                      <td>{formatNumber(detail.cartons)}</td>
-                      <td>{detail.partialCartonEa ? `${formatNumber(detail.partialCartonEa)} EA` : "—"}</td>
-                      <td>{formatNumber(detail.cbm, 3)}</td>
-                    </tr>
-                  ));
-                })}
-              </tbody>
-            </table>
-          </section>
-        ) : null}
         <section className="report-section mixed-input-report">
           <h2>
-            <span>{currentAppliedKit ? "02" : "01"}</span>
+            <span>01</span>
             {tr(
               "产品参数与系统换算",
               "PRODUCT PARAMETERS & SYSTEM CALCULATION",
@@ -3073,7 +2585,6 @@ export default function MixedPlanner({
           <table className="mixed-product-identity-table">
             <thead>
               <tr>
-                <th>{tr("项次", "Item Group")}</th>
                 <th>{tr("系列", "Series")}</th>
                 <th>{tr("产品代码", "Code")}</th>
                 <th>{tr("品名规格", "Product / specification")}</th>
@@ -3085,7 +2596,6 @@ export default function MixedPlanner({
             <tbody>
               {validItems.map((item) => (
                 <tr key={item.id}>
-                  <td>{item.itemGroup || "—"}</td>
                   <td>{item.series || "—"}</td>
                   <td>{item.code || "—"}</td>
                   <td>{item.name || "—"}</td>
@@ -3183,7 +2693,7 @@ export default function MixedPlanner({
           >
             <h2>
               <span>
-                {String(plan.index + (currentAppliedKit ? 2 : 1)).padStart(2, "0")}
+                {String(plan.index + 1).padStart(2, "0")}
               </span>
               {tr(
                 `第 ${plan.index} 柜 · 分区装载图`,
@@ -3267,7 +2777,6 @@ export default function MixedPlanner({
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>{tr("项次", "Item Group")}</th>
                   <th>{tr("产品", "Product")}</th>
                   <th>{tr("包装", "Pack")}</th>
                   <th>{tr("箱数 / 产品数", "BOX / EA")}</th>
@@ -3281,7 +2790,6 @@ export default function MixedPlanner({
                 {plan.blocks.map((block, index) => (
                   <tr key={block.item.id}>
                     <td>{index + 1}</td>
-                    <td>{block.item.itemGroup || "—"}</td>
                     <td>
                       {block.item.code} · {block.item.name}
                     </td>
@@ -3331,7 +2839,7 @@ export default function MixedPlanner({
         ))}
         <section className="report-section report-principles">
           <h2>
-            <span>99</span>
+            <span>{String(result.containers.length + 2).padStart(2, "0")}</span>
             {tr("现场执行原则与复核", "EXECUTION RULES & VERIFICATION")}
           </h2>
           <ol>
@@ -3385,17 +2893,64 @@ export default function MixedPlanner({
             </li>
           </ol>
         </section>
-        <div className="report-verification-grid mixed-verification-grid">
+        <section className="report-section report-execution-record report-page-break">
+          <h2>
+            <span>{String(result.containers.length + 3).padStart(2, "0")}</span>
+            {tr("装柜复核与签核记录", "LOADING VERIFICATION & SIGN-OFF RECORD")}
+          </h2>
+          <div className="report-execution-fields">
+            {[
+              tr("柜号", "Container no."),
+              tr("封条号", "Seal no."),
+              tr("装柜日期", "Loading date"),
+              tr("开始时间", "Start time"),
+              tr("完成时间", "Finish time"),
+              tr("装柜地点", "Loading site"),
+              tr("现场负责人", "Supervisor"),
+              tr("客户 / 订单号", "Customer / order no."),
+            ].map((label) => (
+              <div key={label}>
+                <b>{label}</b>
+                <span />
+              </div>
+            ))}
+          </div>
+          <div className="report-verification-grid mixed-verification-grid">
           <span>{tr("□ 外箱与托盘实测尺寸已与报告逐项核对", "□ Measured carton and pallet dimensions checked against this report")}</span>
           <span>{tr(`□ 柜内与门洞尺寸已复测（参考 ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm）`, `□ Container and door opening remeasured (reference ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm)`)}</span>
-          <span>{tr("□ 项次、SKU、BOX、EA 与装柜清单一致", "□ Item Groups, SKUs, BOX and EA agree with the loading list")}</span>
+          <span>{tr("□ SKU、BOX、EA 与订单装柜清单一致", "□ SKUs, BOX and EA agree with the order loading list")}</span>
           <span>{tr("□ 托盘边界、层数、总高、顶面平整与缠膜余量已复核", "□ Pallet boundary, layers, loaded height, level top and wrap allowance verified")}</span>
           <span>{tr("□ 尾箱已填充、封签、标注 EA 并置于区末最上层", "□ Partial cartons filled, sealed, EA-marked and secured on top at zone end")}</span>
           <span>{tr("□ 空隙挡固、填充、支撑/系固方案已落实", "□ Void blocking, filling, bracing/securing plan implemented")}</span>
           <span>{tr("□ 总载重、轴载、重心与纸箱抗压已由责任人员确认", "□ Payload, axle load, centre of gravity and carton compression approved")}</span>
           <span>{tr("□ 柜号、封条号与现场照片已归档", "□ Container number, seal number and loading photos archived")}</span>
-        </div>
-        <footer className="report-signoff">
+          </div>
+          <div className="report-execution-notes">
+            <article>
+              <b>{tr("现场偏差与处置记录", "SITE DEVIATION & CORRECTIVE ACTION")}</b>
+              {Array.from({ length: 7 }, (_, index) => (
+                <span key={index} />
+              ))}
+            </article>
+            <article>
+              <b>{tr("装柜照片 / 文件索引", "LOADING PHOTO / FILE INDEX")}</b>
+              <div className="report-photo-index">
+                {Array.from({ length: 4 }, (_, index) => (
+                  <span key={index}>
+                    {tr(`照片 ${index + 1}`, `PHOTO ${index + 1}`)}
+                  </span>
+                ))}
+              </div>
+              <b>{tr("封柜结论", "CLOSING DECISION")}</b>
+              <p>
+                □ {tr("符合方案，可封柜", "Plan verified; container may be closed")}
+              </p>
+              <p>
+                □ {tr("存在偏差，按上方记录处置后封柜", "Deviation corrected as recorded before closing")}
+              </p>
+            </article>
+          </div>
+          <footer className="report-signoff">
           <div>
             {tr("制表：", "Prepared by:")}
             <span />
@@ -3412,8 +2967,8 @@ export default function MixedPlanner({
             {tr("日期：", "Date:")}
             <span />
           </div>
-        </footer>
-        <div className="report-document-footer">
+          </footer>
+          <div className="report-document-footer">
           <span>
             © 2026{" "}
             {tr("浙江美集实业有限公司", "Zhejiang Megee Industry Co., Ltd.")} ·
@@ -3422,7 +2977,8 @@ export default function MixedPlanner({
           <b>
             Container Planner v{appVersion} · Build {buildVersion} · {reportNumber}
           </b>
-        </div>
+          </div>
+        </section>
         <div className="report-running-footer">
           <span>
             {tr("浙江美集实业有限公司", "Zhejiang Megee Industry Co., Ltd.")} ·
