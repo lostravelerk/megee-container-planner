@@ -13,7 +13,7 @@ import MixedPlanner from "./MixedPlanner";
 type Mode = "carton" | "pallet";
 type ViewMode = "top" | "side" | "front" | "pallet";
 type ReportLanguage = "zh" | "en";
-type Dimensions = { l: number; w: number; h: number };
+type Dimensions = { l: number; w: number; h: number; doorW?: number; doorH?: number };
 type Position = { x: number; y: number; w: number; h: number; rotated: boolean };
 type ProductInfo = { family: string; code: string; name: string; remarks: string };
 type ImportedProduct = Pick<ProductInfo, "family" | "code" | "name"> & {
@@ -25,26 +25,6 @@ type ImportedProduct = Pick<ProductInfo, "family" | "code" | "name"> & {
 };
 type WorkspaceView = "library" | "planner" | "mixed";
 type InputMethod = "excel" | "manual";
-type SharedSinglePlan = {
-  product: ProductInfo;
-  mode: Mode;
-  carton: Dimensions;
-  pallet: Dimensions;
-  containerType: string;
-  eaPerBox: number | "";
-  palletMinHeight: number;
-  palletHeightLimit: number;
-  allowDoubleStack: boolean;
-  minimumPalletUtilization: number;
-  edgeInset: number;
-  cartonTolerance: number;
-  cartonGap: number;
-  palletTolerance: number;
-  palletGap: number;
-  doorClearance: number;
-  sideClearance: number;
-  topClearance: number;
-};
 
 type SavedPlan = {
   id: string;
@@ -79,13 +59,13 @@ type SavedPlan = {
 
 const PLAN_STORAGE_KEY = "megee-loadwise-plans-v1";
 const PRODUCT_STORAGE_KEY = "megee-container-products-v2";
-const APP_VERSION = "2.4.0";
-const ALGORITHM_VERSION = "LW 2.4";
+const APP_VERSION = "2.5.0";
+const ALGORITHM_VERSION = "LW 2.5";
 
 const CONTAINERS: Record<string, Dimensions> = {
-  "20GP": { l: 5898, w: 2352, h: 2393 },
-  "40GP": { l: 12032, w: 2352, h: 2393 },
-  "40HQ": { l: 12032, w: 2352, h: 2698 },
+  "20GP": { l: 5898, w: 2352, h: 2393, doorW: 2340, doorH: 2292 },
+  "40GP": { l: 12032, w: 2352, h: 2393, doorW: 2340, doorH: 2292 },
+  "40HQ": { l: 12032, w: 2352, h: 2698, doorW: 2340, doorH: 2597 },
 };
 
 const DEFAULTS = {
@@ -162,7 +142,7 @@ function parseProductRows(rows: SpreadsheetCell[][]): ImportedProduct[] {
       name,
       productQuantity: parsePositiveNumber(row[indexes.quantity]),
       eaPerBox: parsePositiveNumber(row[indexes.ea]),
-      carton: parseCartonSize(row[indexes.carton]),
+      carton: parseCartonSize(row[indexes.carton]) ?? DEFAULTS.carton,
       packaging,
       pallet,
     }];
@@ -173,38 +153,6 @@ function parseProductRows(rows: SpreadsheetCell[][]): ImportedProduct[] {
 
 const clampNumber = (value: number, minimum = 0) =>
   Number.isFinite(value) ? Math.max(minimum, value) : minimum;
-
-function encodeSharePayload(payload: unknown) {
-  const bytes = new TextEncoder().encode(JSON.stringify(payload));
-  let binary = "";
-  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-function decodeSharePayload(value: string) {
-  const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
-  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
-  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes)) as Partial<SharedSinglePlan>;
-}
-
-function safeSharedNumber(value: unknown, fallback: number, minimum = 0, maximum = 100000) {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? Math.min(maximum, Math.max(minimum, numeric)) : fallback;
-}
-
-function safeSharedText(value: unknown) {
-  return typeof value === "string" ? value.slice(0, 160) : "";
-}
-
-function safeSharedDimensions(value: unknown, fallback: Dimensions): Dimensions {
-  const source = value && typeof value === "object" ? value as Partial<Dimensions> : {};
-  return {
-    l: safeSharedNumber(source.l, fallback.l, 10),
-    w: safeSharedNumber(source.w, fallback.w, 10),
-    h: safeSharedNumber(source.h, fallback.h, 10),
-  };
-}
 
 function formatNumber(value: number, digits = 0) {
   return value.toLocaleString("zh-CN", {
@@ -599,6 +547,10 @@ function calculateLoadPlan(config: CalculationConfig) {
     cartonGap,
   );
   const directLayers = countAlong(effectiveContainer.h, effectiveCarton.h, 0);
+  const doorWidth = container.doorW ?? container.w;
+  const doorHeight = container.doorH ?? container.h;
+  const directDoorPasses = effectiveCarton.h <= doorHeight + 0.001
+    && Math.min(effectiveCarton.l, effectiveCarton.w) <= doorWidth + 0.001;
   const effectivePallet = { l: pallet.l + palletTolerance, w: pallet.w + palletTolerance };
   const palletPlan = packRectangles(
     effectiveContainer.l,
@@ -626,12 +578,17 @@ function calculateLoadPlan(config: CalculationConfig) {
   const stackHeight = palletStacking.stackHeight;
   const palletStackLevels = palletStacking.stackLevels;
   const columnHeight = palletStacking.columnHeight;
-  const totalPallets = palletPlan.count * palletStackLevels;
+  const loadedPalletL = effectivePallet.l;
+  const loadedPalletW = effectivePallet.w;
+  const palletDoorPasses = stackHeight > 0
+    && stackHeight <= doorHeight + 0.001
+    && Math.min(loadedPalletL, loadedPalletW) <= doorWidth + 0.001;
+  const totalPallets = palletDoorPasses ? palletPlan.count * palletStackLevels : 0;
   const cartonsPerPallet = cartonOnPallet.count * palletLayers;
   const cartonsPerPalletPosition = cartonsPerPallet * palletStackLevels;
-  const palletCandidateTotal = palletPlan.count * cartonsPerPalletPosition;
+  const palletCandidateTotal = palletDoorPasses ? palletPlan.count * cartonsPerPalletPosition : 0;
   const total = mode === "carton"
-    ? directPlan.count * directLayers
+    ? (directDoorPasses ? directPlan.count * directLayers : 0)
     : palletCandidateTotal;
   const usedCartonVolume = total * carton.l * carton.w * carton.h;
   const containerVolume = container.l * container.w * container.h;
@@ -647,10 +604,10 @@ function calculateLoadPlan(config: CalculationConfig) {
   const chargeableVolumeCbm = mode === "carton"
     ? calculateChargeableVolumeCbm(total, carton.l, carton.w, carton.h)
     : total > 0
-      ? calculateChargeableVolumeCbm(totalPallets, effectivePallet.l, effectivePallet.w, stackHeight)
+      ? calculateChargeableVolumeCbm(totalPallets, pallet.l, pallet.w, stackHeight)
       : 0;
   const palletChargeableVolumeCbm = totalPallets > 0
-    ? calculateChargeableVolumeCbm(totalPallets, effectivePallet.l, effectivePallet.w, stackHeight)
+    ? calculateChargeableVolumeCbm(totalPallets, pallet.l, pallet.w, stackHeight)
     : 0;
   const effectiveContainerVolumeCbm = effectiveContainer.l * effectiveContainer.w * effectiveContainer.h / 1_000_000_000;
   const palletEnvelopeUtilization = effectiveContainerVolumeCbm > 0
@@ -658,6 +615,7 @@ function calculateLoadPlan(config: CalculationConfig) {
     : 0;
   const palletPlanQualified = Boolean(
     palletStacking.heightQualified
+    && palletDoorPasses
     && palletCandidateTotal > 0
     && palletEnvelopeUtilization >= minimumPalletUtilization,
   );
@@ -667,6 +625,7 @@ function calculateLoadPlan(config: CalculationConfig) {
     cartonOnPallet, palletLayers, stackHeight, palletStackLevels, columnHeight,
     totalPallets, cartonsPerPallet, cartonsPerPalletPosition, palletCandidateTotal, total, volumeUse, floorUse,
     palletEnvelopeUtilization, palletPlanQualified,
+    doorWidth, doorHeight, doorPasses: mode === "carton" ? directDoorPasses : palletDoorPasses,
     floorPlan, layers, heightUsed,
     chargeableVolumeCbm,
     remainingHeight: Math.max(0, effectiveContainer.h - heightUsed),
@@ -710,7 +669,7 @@ function createAutomaticProductPlans(
   );
   const automaticPlans = importedProducts.map((product): SavedPlan => {
     const previous = previousByCode.get(product.code);
-    const sourceComplete = Boolean(product.productQuantity && product.carton && product.eaPerBox && (product.packaging === "carton" || product.pallet));
+    const sourceComplete = Boolean(product.productQuantity && product.eaPerBox && (product.packaging === "carton" || product.pallet));
     const productCarton = product.carton ?? DEFAULTS.carton;
     const productPallet = product.pallet ?? DEFAULTS.pallet;
     const choices = sourceComplete
@@ -835,6 +794,7 @@ export default function LoadPlanner() {
           dataset = (cached.products ?? []).map((product) => ({
             ...product,
             productQuantity: Number.isFinite(Number(product.productQuantity)) && Number(product.productQuantity) > 0 ? Number(product.productQuantity) : null,
+            carton: product.carton && [product.carton.l, product.carton.w, product.carton.h].every((value) => Number(value) > 0) ? product.carton : DEFAULTS.carton,
             packaging: product.packaging === "pallet" ? "pallet" : "carton",
             pallet: product.pallet && [product.pallet.l, product.pallet.w, product.pallet.h].every((value) => Number(value) > 0) ? product.pallet : null,
           }));
@@ -864,44 +824,6 @@ export default function LoadPlanner() {
             setWorkspaceView("planner");
           }
           if (params.get("lang") === "en") setReportLanguage("en");
-          const sharedValue = window.location.hash.startsWith("#single=") ? window.location.hash.slice(8) : "";
-          if (sharedValue && sharedValue.length <= 16000) {
-            try {
-              const shared = decodeSharePayload(sharedValue);
-              const sharedContainerType = typeof shared.containerType === "string" && CONTAINERS[shared.containerType] ? shared.containerType : "40HQ";
-              const sharedProduct = shared.product && typeof shared.product === "object" ? shared.product : { family: "", code: "", name: "", remarks: "" };
-              setProductInfo({
-                family: safeSharedText(sharedProduct.family),
-                code: safeSharedText(sharedProduct.code),
-                name: safeSharedText(sharedProduct.name),
-                remarks: safeSharedText(sharedProduct.remarks),
-              });
-              setMode(shared.mode === "pallet" ? "pallet" : "carton");
-              setCarton(safeSharedDimensions(shared.carton, DEFAULTS.carton));
-              setPallet(safeSharedDimensions(shared.pallet, DEFAULTS.pallet));
-              setContainerType(sharedContainerType);
-              setContainer(CONTAINERS[sharedContainerType]);
-              setEaPerBox(shared.eaPerBox === "" ? "" : safeSharedNumber(shared.eaPerBox, 1, 1, 10_000_000));
-              setPalletMinHeight(safeSharedNumber(shared.palletMinHeight, 1200, 100, 5000));
-              setPalletHeightLimit(safeSharedNumber(shared.palletHeightLimit, 1800, 100, 5000));
-              setAllowDoubleStack(shared.allowDoubleStack !== false);
-              setMinimumPalletUtilization(safeSharedNumber(shared.minimumPalletUtilization, 70, 0, 100));
-              setEdgeInset(safeSharedNumber(shared.edgeInset, 10, 0, 1000));
-              setCartonTolerance(safeSharedNumber(shared.cartonTolerance, 3, 0, 1000));
-              setCartonGap(safeSharedNumber(shared.cartonGap, 5, 0, 1000));
-              setPalletTolerance(safeSharedNumber(shared.palletTolerance, 10, 0, 1000));
-              setPalletGap(safeSharedNumber(shared.palletGap, 20, 0, 1000));
-              setDoorClearance(safeSharedNumber(shared.doorClearance, 80, 0, 5000));
-              setSideClearance(safeSharedNumber(shared.sideClearance, 30, 0, 2000));
-              setTopClearance(safeSharedNumber(shared.topClearance, 50, 0, 2000));
-              setInputMethod("manual");
-              setActivePlanVersion(null);
-              setActivePlanStatus("待复核");
-              setWorkspaceView("planner");
-            } catch {
-              setSaveNotice(params.get("lang") === "en" ? "The shared plan link is invalid." : "分享方案链接无效，请重新生成。");
-            }
-          }
         }
       } catch {
         if (!cancelled) setSaveNotice("产品数据初始化失败，请导入标准 Excel 模板重试。");
@@ -989,7 +911,9 @@ export default function LoadPlanner() {
   const reportIsEnglish = reportLanguage === "en";
   const tr = (zh: string, en: string) => reportIsEnglish ? en : zh;
   const warning = result.total === 0
-    ? tr("当前尺寸组合无法装入，请检查尺寸和安全余量。", "The current dimensions do not fit. Check dimensions and clearances.")
+    ? !result.doorPasses
+      ? tr(`包装单元无法以规定方向通过柜门（参考门洞 ${formatNumber(result.doorWidth)} × ${formatNumber(result.doorHeight)} mm），该方案禁止执行。`, `The loading unit cannot pass through the door in the required orientation (reference opening ${formatNumber(result.doorWidth)} × ${formatNumber(result.doorHeight)} mm). Do not execute this plan.`)
+      : tr("当前尺寸组合无法装入，请检查尺寸和安全余量。", "The current dimensions do not fit. Check dimensions and clearances.")
     : mode === "pallet" && palletMinHeight > palletHeightLimit
       ? tr("托盘目标最低总高不能高于最大总高，请调整目标区间。", "The minimum pallet height cannot exceed the maximum height.")
     : mode === "pallet" && !result.palletPlanQualified && result.stackHeight < palletMinHeight
@@ -1011,6 +935,77 @@ export default function LoadPlanner() {
     timeZone: "Asia/Shanghai",
   }).format(new Date());
   const reportNumber = `LW-${containerType}-${carton.l}${carton.w}${carton.h}-${result.total}`;
+  const singleReportReady = Boolean(
+    workspaceView === "planner"
+    && productInfo.family.trim()
+    && productInfo.code.trim()
+    && productInfo.name.trim()
+    && Number.isSafeInteger(eaPerBox)
+    && Number(eaPerBox) > 0
+    && result.total > 0
+    && result.doorPasses,
+  );
+
+  const handleSinglePrint = async () => {
+    const errors: string[] = [];
+    const validateFloor = (positions: Position[], boundary: { l: number; w: number }, gap: number, label: string) => {
+      positions.forEach((position, index) => {
+        if (![position.x, position.y, position.w, position.h].every(Number.isFinite)
+          || position.w <= 0 || position.h <= 0
+          || position.x < -0.001 || position.y < -0.001
+          || position.x + position.w > boundary.l + 0.001
+          || position.y + position.h > boundary.w + 0.001) {
+          errors.push(`${label}: boundary or dimension check failed.`);
+        }
+        for (const other of positions.slice(index + 1)) {
+          const separated = position.x + position.w + gap <= other.x + 0.05
+            || other.x + other.w + gap <= position.x + 0.05
+            || position.y + position.h + gap <= other.y + 0.05
+            || other.y + other.h + gap <= position.y + 0.05;
+          if (!separated) errors.push(`${label}: loading units overlap or violate the configured gap.`);
+        }
+      });
+    };
+    if (!singleReportReady) errors.push("Product identity, EA/BOX, door passage or calculated quantity is incomplete.");
+    const selectedPlan = mode === "carton" ? result.directPlan : result.palletPlan;
+    const selectedGap = mode === "carton" ? cartonGap : palletGap;
+    if (selectedPlan.positions.length !== selectedPlan.count) errors.push("Floor-plan count does not match its geometry.");
+    validateFloor(selectedPlan.positions, result.effectiveContainer, selectedGap, "Container floor plan");
+    if (mode === "carton") {
+      if (result.total !== result.directPlan.count * result.directLayers) errors.push("Carton total does not match floor positions × layers.");
+      if (result.directLayers * result.effectiveCarton.h > result.effectiveContainer.h + 0.001) errors.push("Carton stack exceeds effective height.");
+    } else {
+      const palletSurface = { l: Math.max(0, pallet.l - edgeInset * 2), w: Math.max(0, pallet.w - edgeInset * 2) };
+      if (result.cartonOnPallet.positions.length !== result.cartonOnPallet.count) errors.push("Pallet carton count does not match its geometry.");
+      validateFloor(result.cartonOnPallet.positions, palletSurface, cartonGap, "Pallet carton pattern");
+      const expected = result.palletPlan.count * result.palletStackLevels * result.cartonOnPallet.count * result.palletLayers;
+      if (result.total !== expected || result.totalPallets !== result.palletPlan.count * result.palletStackLevels) errors.push("Pallet/carton totals are inconsistent.");
+      if (result.columnHeight > result.effectiveContainer.h + 0.001) errors.push("Pallet stack exceeds effective height.");
+    }
+    const expectedCbm = mode === "carton"
+      ? result.total * carton.l * carton.w * carton.h / 1_000_000_000
+      : result.totalPallets * pallet.l * pallet.w * result.stackHeight / 1_000_000_000;
+    if (Math.abs(expectedCbm - result.chargeableVolumeCbm) > 0.000001) errors.push("Packaging CBM is inconsistent with the calculated loading units.");
+    if (errors.length) {
+      setSaveNotice(tr(`报告输出已阻止：${errors[0]}`, `Report output blocked: ${errors[0]}`));
+      return;
+    }
+    await document.fonts?.ready;
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    const report = document.querySelector<HTMLElement>(".print-report");
+    const expectedViews = mode === "pallet" ? 4 : 3;
+    if (!report
+      || report.querySelectorAll(".report-section").length < 4
+      || report.querySelectorAll(".report-view").length !== expectedViews
+      || !report.querySelector(".report-foundation-grid")
+      || !report.querySelector(".report-signoff")
+      || /\b(?:NaN|Infinity|undefined|null)\b/.test(report.textContent ?? "")) {
+      setSaveNotice(tr("报告输出已阻止：报告表格、图示或签字结构自检失败。", "Report output blocked: report tables, diagrams or sign-off structure failed preflight."));
+      return;
+    }
+    setSaveNotice("");
+    window.print();
+  };
 
   const visiblePlans = useMemo(() => {
     const query = librarySearch.trim().toLocaleLowerCase("zh-CN");
@@ -1066,45 +1061,6 @@ export default function LoadPlanner() {
     setActivePlanStatus(nextPlan.status);
   };
 
-  const buildSingleShareUrl = () => {
-    const payload: SharedSinglePlan = {
-      product: productInfo,
-      mode,
-      carton,
-      pallet,
-      containerType,
-      eaPerBox,
-      palletMinHeight,
-      palletHeightLimit,
-      allowDoubleStack,
-      minimumPalletUtilization,
-      edgeInset,
-      cartonTolerance,
-      cartonGap,
-      palletTolerance,
-      palletGap,
-      doorClearance,
-      sideClearance,
-      topClearance,
-    };
-    return `${window.location.origin}${window.location.pathname}?view=planner&lang=${reportLanguage}#single=${encodeSharePayload(payload)}`;
-  };
-
-  const copySingleShareLink = async () => {
-    try {
-      await navigator.clipboard.writeText(buildSingleShareUrl());
-      setSaveNotice(tr("已复制仅包含当前单品方案的分享链接。", "A share link containing only this single-product plan has been copied."));
-    } catch {
-      setSaveNotice(tr("浏览器未允许复制，请从地址栏复制链接。", "Copy permission was denied. Copy the URL from the address bar."));
-    }
-  };
-
-  const emailSingleShare = () => {
-    const subject = tr(`装柜方案 ${productInfo.code || reportNumber}`, `Container Loading Plan ${productInfo.code || reportNumber}`);
-    const body = tr(`请通过以下链接查看装柜方案，可在浏览器打印或另存为 PDF：\n${buildSingleShareUrl()}`, `View the loading plan at the link below. It can be printed or saved as PDF:\n${buildSingleShareUrl()}`);
-    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  };
-
   const applyProductDataset = (dataset: ImportedProduct[], importedAt = new Date().toISOString()) => {
     const nextPlans = createAutomaticProductPlans(dataset, savedPlans, importedAt);
     setProducts(dataset);
@@ -1112,11 +1068,11 @@ export default function LoadPlanner() {
     setSavedPlans(nextPlans);
     window.localStorage.setItem(PRODUCT_STORAGE_KEY, JSON.stringify({ products: dataset, importedAt }));
     window.localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(nextPlans));
-    const incomplete = dataset.filter((item) => !item.productQuantity || !item.carton || !item.eaPerBox || (item.packaging === "pallet" && !item.pallet)).length;
+    const incomplete = dataset.filter((item) => !item.productQuantity || !item.eaPerBox || (item.packaging === "pallet" && !item.pallet)).length;
     setSaveNotice(
       reportIsEnglish
-        ? `Imported ${dataset.length} products and generated all container plans locally.${incomplete ? ` ${incomplete} record(s) require product quantity, EA/BOX, carton size or pallet data.` : ""}`
-        : `已在本机导入 ${dataset.length} 款产品并自动完成全部柜型规划。${incomplete ? `其中 ${incomplete} 款缺少产品数量、EA/BOX、外箱尺寸或托盘数据，已标记待补充。` : ""}`,
+        ? `Imported ${dataset.length} products and generated all container plans locally. Missing carton dimensions use the Megee default 480 × 380 × 350 mm.${incomplete ? ` ${incomplete} record(s) require product quantity, EA/BOX or pallet data.` : ""}`
+        : `已在本机导入 ${dataset.length} 款产品并自动完成全部柜型规划。空白外箱尺寸自动采用美集默认值 480 × 380 × 350 mm。${incomplete ? `其中 ${incomplete} 款缺少产品数量、EA/BOX 或托盘数据，已标记待补充。` : ""}`,
     );
   };
 
@@ -1195,7 +1151,9 @@ export default function LoadPlanner() {
     setActivePlanVersion(plan.version);
     setActivePlanStatus(plan.status);
     setWorkspaceView("planner");
-    if (printAfterOpen) window.setTimeout(() => window.print(), 250);
+    if (printAfterOpen) window.setTimeout(() => {
+      document.querySelector<HTMLButtonElement>("[data-single-report-print]")?.click();
+    }, 500);
   };
 
   return (
@@ -1227,7 +1185,7 @@ export default function LoadPlanner() {
             <button className={reportLanguage === "en" ? "active" : ""} onClick={() => { setReportLanguage("en"); setSaveNotice(""); }}>EN</button>
           </div>
           <button className="text-button" onClick={resetAll}>{tr("恢复默认", "Reset")}</button>
-          <button className="text-button" onClick={() => window.print()}>{tr("输出报告", "Report")}</button>
+          <button className="text-button" disabled={!singleReportReady} onClick={() => void handleSinglePrint()}>{tr("输出报告", "Report")}</button>
           <div className="status-pill"><span /> {tr("本地计算", "Local calculation")}</div>
         </div>
       </header>
@@ -1277,7 +1235,7 @@ export default function LoadPlanner() {
                       <td data-label={tr("产品代码", "Product code")}><code>{plan.product.code || "—"}</code></td>
                       <td data-label={tr("品名规格", "Product / specification")}>{plan.product.name || "—"}</td>
                       <td data-label="EA/BOX">{plan.eaPerBox === "" ? "—" : formatNumber(plan.eaPerBox)}</td>
-                      <td data-label={tr("外箱尺寸", "Outer carton")}><span className={plan.sourceComplete === false ? "missing-source" : ""}>{plan.sourceComplete === false ? tr("待补充", "Required") : `${formatNumber(plan.carton.l)} × ${formatNumber(plan.carton.w)} × ${formatNumber(plan.carton.h)} mm`}</span></td>
+                      <td data-label={tr("外箱尺寸", "Outer carton")}><span>{formatNumber(plan.carton.l)} × {formatNumber(plan.carton.w)} × {formatNumber(plan.carton.h)} mm</span></td>
                       <td data-label="20GP" className="container-quantity"><strong>{formatNumber(totals["20GP"])} <small>BOX</small></strong><span>{plan.eaPerBox === "" ? tr("EA 待填写", "EA required") : `${formatNumber(totals["20GP"] * plan.eaPerBox)} EA`}</span></td>
                       <td data-label="40GP" className="container-quantity"><strong>{formatNumber(totals["40GP"])} <small>BOX</small></strong><span>{plan.eaPerBox === "" ? tr("EA 待填写", "EA required") : `${formatNumber(totals["40GP"] * plan.eaPerBox)} EA`}</span></td>
                       <td data-label="40HQ" className="container-quantity"><strong>{formatNumber(totals["40HQ"])} <small>BOX</small></strong><span>{plan.eaPerBox === "" ? tr("EA 待填写", "EA required") : `${formatNumber(totals["40HQ"] * plan.eaPerBox)} EA`}</span></td>
@@ -1313,9 +1271,7 @@ export default function LoadPlanner() {
         </button>
         </div>
         <div className="planner-share-actions">
-          <button onClick={() => void copySingleShareLink()}>{tr("复制方案链接", "Copy plan link")}</button>
-          <button onClick={emailSingleShare}>{tr("邮件分享", "Email")}</button>
-          <button className="primary" onClick={() => window.print()}>{tr("打印 / PDF", "Print / PDF")} ↗</button>
+          <button data-single-report-print className="primary" disabled={!singleReportReady} onClick={() => void handleSinglePrint()}>{tr("打印 / 另存为 PDF", "Print / Save as PDF")} ↗</button>
         </div>
       </section>
 
@@ -1414,6 +1370,8 @@ export default function LoadPlanner() {
               <NumberInput label={tr("内长", "Internal length")} value={container.l} min={100} onChange={(value) => updateDimension(setContainer, container, "l", value, true)} />
               <NumberInput label={tr("内宽", "Internal width")} value={container.w} min={100} onChange={(value) => updateDimension(setContainer, container, "w", value, true)} />
               <NumberInput label={tr("内高", "Internal height")} value={container.h} min={100} onChange={(value) => updateDimension(setContainer, container, "h", value, true)} />
+              <NumberInput label={tr("门宽", "Door width")} value={container.doorW ?? container.w} min={100} onChange={(value) => updateDimension(setContainer, container, "doorW", value, true)} />
+              <NumberInput label={tr("门高", "Door height")} value={container.doorH ?? container.h} min={100} onChange={(value) => updateDimension(setContainer, container, "doorH", value, true)} />
             </div>
           </div>
 
@@ -1487,7 +1445,7 @@ export default function LoadPlanner() {
             </div>
 
             <div className="visual-key">
-              <span className="optimal-badge"><i /> {tr("规则内最优", "Rule-optimal")}</span>
+              <span className="optimal-badge"><i /> {tr("规则内工程最优", "Engineering optimum")}</span>
               <span><i className="key-normal" /> {tr("正向", "0°")}</span>
               <span><i className="key-rotated" /> {tr("旋转 90°", "Rotated 90°")}</span>
               <span><i className="key-space" /> {tr("预留空隙", "Clearance")}</span>
@@ -1613,13 +1571,13 @@ export default function LoadPlanner() {
                 <button className={reportLanguage === "en" ? "active" : ""} onClick={() => setReportLanguage("en")}>English</button>
               </div>
               <button className="save-plan-button" onClick={saveCurrentPlan}>{tr("保存到方案库", "Save to Library")} <b>＋</b></button>
-              <button onClick={() => window.print()}>{tr("打印 / 存为 PDF", "Print / Save PDF")} <b>↗</b></button>
+              <button disabled={!singleReportReady} onClick={() => void handleSinglePrint()}>{tr("打印 / 存为 PDF", "Print / Save PDF")} <b>↗</b></button>
             </div>
           </div>
 
           {saveNotice && <div className="planner-notice" role="status">{saveNotice}</div>}
 
-          <p className="method-note">{tr("计算方法：在箱高固定朝上、底面仅旋转 90° 的约束内，全量枚举横向与纵向规则分带组合；先最大化包装单元数量，数量相同再优先选择余隙更规整的方案。结果为上述规则内最优工程预估，不替代现场装柜与承重校核。", "Method: enumerate regular longitudinal and transverse strip patterns with carton height fixed upright and 90° base rotation only. Maximize packaging units first, then prefer orderly clearances. This rule-optimal engineering estimate does not replace on-site loading and load-bearing checks.")}</p>
+          <p className="method-note">{tr("计算方法：箱高固定向上，底面仅允许旋转 90°；比较两个主轴的规则分带，并对小型高密度布局进行精确校正。先最大化包装单元数量，数量相同再选择余隙更规整的方案。结果为声明约束内的工程最优预估，不替代现场装柜、承重和系固校核。", "Method: keep carton height upright and allow only 90° base rotation; compare regular strips on both main axes and apply exact correction to small dense layouts. Maximize loading units first, then prefer orderly clearances. This engineering optimum within the stated constraints does not replace on-site loading, load-bearing or securing checks.")}</p>
         </section>
       </div></>}
 
@@ -1638,7 +1596,7 @@ export default function LoadPlanner() {
             <div><dt>{reportIsEnglish ? "Plan Version" : "方案版本"}</dt><dd>{activePlanVersion ? `V${activePlanVersion}` : (reportIsEnglish ? "UNSAVED DRAFT" : "未保存草案")}</dd></div>
             <div><dt>{reportIsEnglish ? "Software / Algorithm" : "软件 / 算法版本"}</dt><dd>v{APP_VERSION} / {ALGORITHM_VERSION}</dd></div>
             <div><dt>{reportIsEnglish ? "Product Data Imported" : "产品数据导入时间"}</dt><dd>{dataImportedAt ? new Intl.DateTimeFormat(reportIsEnglish ? "en-GB" : "zh-CN", { dateStyle: "short", timeStyle: "short" }).format(new Date(dataImportedAt)) : (reportIsEnglish ? "NOT IMPORTED / MANUAL" : "未导入 / 手工输入")}</dd></div>
-            <div><dt>{reportIsEnglish ? "Status" : "方案状态"}</dt><dd>{mode === "pallet" && !result.palletPlanQualified ? (reportIsEnglish ? "PALLET PLAN NOT APPROVED" : "托盘未达门槛 · 不推荐执行") : (reportIsEnglish ? `${activePlanStatus === "已复核" ? "REVIEWED" : "PENDING REVIEW"} · RULE-OPTIMAL` : `${activePlanStatus} · 规则内最优`)}</dd></div>
+            <div><dt>{reportIsEnglish ? "Status" : "方案状态"}</dt><dd>{!result.doorPasses ? (reportIsEnglish ? "DOOR CHECK FAILED · DO NOT EXECUTE" : "柜门校验失败 · 禁止执行") : mode === "pallet" && !result.palletPlanQualified ? (reportIsEnglish ? "PALLET PLAN NOT APPROVED" : "托盘未达门槛 · 不推荐执行") : (reportIsEnglish ? `${activePlanStatus === "已复核" ? "REVIEWED" : "PENDING REVIEW"} · ENGINEERING OPTIMUM` : `${activePlanStatus} · 规则内工程最优`)}</dd></div>
           </dl>
         </header>
 
@@ -1665,6 +1623,7 @@ export default function LoadPlanner() {
             <table><tbody>
               <tr><th>EA/BOX</th><td>{eaPerBox === "" ? (reportIsEnglish ? "NOT ENTERED" : "未填写") : eaPerBox}</td></tr>
               <tr><th>{reportIsEnglish ? "Container Internal Size" : "集装箱内尺寸"}</th><td>{container.l} × {container.w} × {container.h} mm</td></tr>
+              <tr><th>{reportIsEnglish ? "Reference Door Opening" : "参考柜门开口"}</th><td>{formatNumber(result.doorWidth)} × {formatNumber(result.doorHeight)} mm · {result.doorPasses ? (reportIsEnglish ? "PASS" : "可通过") : (reportIsEnglish ? "FAIL · DO NOT EXECUTE" : "不可通过 · 禁止执行")}</td></tr>
               <tr><th>{reportIsEnglish ? "Effective Loading Space" : "有效装载空间"}</th><td>{result.effectiveContainer.l} × {result.effectiveContainer.w} × {result.effectiveContainer.h} mm</td></tr>
               <tr><th>{reportIsEnglish ? "Carton Tolerance / Gap" : "纸箱余量 / 间隙"}</th><td>{cartonTolerance} / {cartonGap} mm</td></tr>
               <tr><th>{reportIsEnglish ? "Door / Side / Top Clearance" : "箱门 / 左右 / 顶部余量"}</th><td>{doorClearance} / {sideClearance} {reportIsEnglish ? "each side" : "每侧"} / {topClearance} mm</td></tr>
@@ -1731,6 +1690,27 @@ export default function LoadPlanner() {
             <li>正式装柜前必须复核实测柜内尺寸、门框角柱、总载重、轴载、重心、纸箱抗压和装卸顺序。</li>
           </ol>}
           <p>{reportIsEnglish ? "This report is a rule-optimal engineering estimate under fixed carton height, 90° base rotation and regular strip-packing constraints. It does not replace on-site load-bearing and safety checks." : "本报告为固定箱高、底面 90° 旋转和规则分带约束内的最优工程预估，不替代现场承重与安全校核。"}</p>
+          <div className="report-verification-grid" aria-label={reportIsEnglish ? "Pre-loading verification checklist" : "装柜前复核清单"}>
+            {(reportIsEnglish ? [
+              "Measured internal size and door opening confirmed",
+              "SKU, carton size and EA/BOX checked",
+              "BOX and EA totals reconciled",
+              "Loading direction and numbered order briefed",
+              "Clearances, void treatment and securing prepared",
+              "Payload, axle load and centre of gravity approved",
+              "Carton compression and pallet capacity approved",
+              "Checker authorizes container closing",
+            ] : [
+              "实测柜内尺寸与门洞已确认",
+              "产品、外箱尺寸及 EA/BOX 已核对",
+              "BOX 与 EA 总数已核对一致",
+              "装柜方向与编号顺序已交底",
+              "间隙、空余区处理及系固已准备",
+              "总载重、轴载及重心已批准",
+              "纸箱抗压与托盘承载已批准",
+              "复核人已批准封柜",
+            ]).map((item) => <span key={item}>□ {item}</span>)}
+          </div>
         </section>
 
         <footer className="report-signoff"><div>{reportIsEnglish ? "Prepared by:" : "制表："}<span /></div><div>{reportIsEnglish ? "Checked by:" : "复核："}<span /></div><div>{reportIsEnglish ? "Approved by:" : "批准："}<span /></div><div>{reportIsEnglish ? "Date:" : "日期："}<span /></div></footer>

@@ -29,7 +29,7 @@ test("server-renders the finished Megee planner", async () => {
   assert.match(html, /480/);
   assert.match(html, /380/);
   assert.match(html, /水平剖面/);
-  assert.match(html, /规则内最优/);
+  assert.match(html, /规则内工程最优/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
 
@@ -40,7 +40,30 @@ test("keeps Megee carton, pallet and height defaults in source", async () => {
   assert.match(source, /useState\(1800\)/);
   assert.match(source, /useState\(70\)/);
   assert.match(source, /STANDARD_IMPORT_HEADERS.*系列.*产品代码.*品名规格.*产品数量.*EA\/BOX.*外箱尺寸.*包装方式.*托盘尺寸/);
+  assert.match(source, /parseCartonSize\(row\[indexes\.carton\]\) \?\? DEFAULTS\.carton/);
   assert.doesNotMatch(source, /api\/cost\/products|同步 Cost|只读同步 Cost/);
+});
+
+test("offers manual and cascading Megee-material entry for mixed loads", async () => {
+  const source = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
+  assert.match(source, /选择美集物料/);
+  assert.match(source, /手工添加拼柜 SKU/);
+  assert.match(source, /选择代码 · 品名/);
+  assert.match(source, /products\.filter\(\s*\(product\) => product\.family === row\.series,?\s*\)/);
+  assert.match(source, /CBM 材积/);
+  assert.match(source, /validateMixedPlan/);
+  assert.match(source, /disabled=\{!reportReady\}/);
+  assert.match(source, /DATA & REPORT STRUCTURE PREFLIGHT: PASS/);
+  assert.match(source, /mixed-product-identity-table tbody tr/);
+  assert.match(source, /planIndex > 0 \? " report-page-break"/);
+  assert.doesNotMatch(source, /复制分享链接|邮件分享|mailto:|navigator\.clipboard/);
+});
+
+test("keeps formal PDF pagination rules explicit", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /thead\s*\{\s*display:\s*table-header-group/);
+  assert.match(styles, /mixed-plan-scroll[^}]*break-inside:\s*avoid-page/);
+  assert.match(styles, /mixed-cross-section-wrap[^}]*break-inside:\s*avoid-page/);
 });
 
 test("ships the standard import template without a public product snapshot", async () => {

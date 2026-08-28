@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cartonsForDemand, planMixedContainers } from "../lib/mixedPacking.js";
+import { cartonsForDemand, planMixedContainers, validateMixedPlan } from "../lib/mixedPacking.js";
 
 const CONTAINER = { l: 12032, w: 2352, h: 2698 };
 
@@ -35,6 +35,72 @@ test("rounds demand up to complete cartons", () => {
   assert.equal(cartonsForDemand(1001, 500), 3);
   assert.equal(cartonsForDemand(1000, 500), 2);
   assert.equal(cartonsForDemand(0, 500), 0);
+  assert.equal(cartonsForDemand(1000.5, 500), 0);
+});
+
+test("calculates carton packaging CBM with a partial carton occupying one full outer-carton volume", () => {
+  const carton = { l: 480, w: 380, h: 350 };
+  const result = planMixedContainers([item("CBM-CARTON", 1001, 500, carton)], CONTAINER);
+  const expected = 3 * carton.l * carton.w * carton.h / 1_000_000_000;
+  assert.equal(result.totalRequiredBoxes, 3);
+  assert.ok(Math.abs(result.items[0].requiredVolumeCbm - expected) < 1e-12);
+  assert.ok(Math.abs(result.totalRequiredVolumeCbm - expected) < 1e-12);
+  assert.ok(Math.abs(result.containers.reduce((sum, plan) => sum + plan.volumeCbm, 0) - expected) < 1e-12);
+  assert.deepEqual(validateMixedPlan(result), { ok: true, errors: [] });
+});
+
+test("blocks report output when preflight detects a corrupted subtotal", () => {
+  const result = planMixedContainers([item("AUDIT", 1000, 100, { l: 480, w: 380, h: 350 })], CONTAINER);
+  result.containers[0].totalBoxes += 1;
+  const audit = validateMixedPlan(result);
+  assert.equal(audit.ok, false);
+  assert.ok(audit.errors.some((message) => /subtotal mismatch/i.test(message)));
+});
+
+test("rejects fractional demand instead of silently rounding product quantity", () => {
+  const result = planMixedContainers([
+    item("FRACTION", 1000.5, 500, { l: 480, w: 380, h: 350 }),
+  ], CONTAINER);
+  assert.equal(result.containers.length, 0);
+  assert.equal(result.unplanned.length, 1);
+  assert.match(result.unplanned[0].reason, /positive integers/i);
+});
+
+test("checks that upright cartons can pass through the measured door opening", () => {
+  const result = planMixedContainers([
+    item("DOOR-FAIL", 1000, 100, { l: 480, w: 380, h: 2350 }),
+  ], { ...CONTAINER, doorW: 2340, doorH: 2292 });
+  assert.equal(result.containers.length, 0);
+  assert.equal(result.unplanned.length, 1);
+  assert.match(result.unplanned[0].reason, /door/i);
+});
+
+test("flags horizontal voids over 150 mm for blocking or securing", () => {
+  const config = { cartonTolerance: 0, cartonGap: 0, skuGap: 0, doorClearance: 0, sideClearance: 0, topClearance: 0 };
+  const flagged = planMixedContainers([
+    item("VOID", 1, 1, { l: 100, w: 200, h: 200 }),
+  ], { l: 400, w: 200, h: 200, doorW: 200, doorH: 200 }, config);
+  assert.equal(flagged.containers[0].remainingLength, 300);
+  assert.equal(flagged.containers[0].requiresSecuring, true);
+
+  const accepted = planMixedContainers([
+    item("VOID-LIMIT", 1, 1, { l: 100, w: 200, h: 200 }),
+  ], { l: 250, w: 200, h: 200, doorW: 200, doorH: 200 }, config);
+  assert.equal(accepted.containers[0].remainingLength, 150);
+  assert.equal(accepted.containers[0].requiresSecuring, false);
+});
+
+test("flags a deep internal row-end void even when the overall loaded length leaves only 150 mm", () => {
+  const result = planMixedContainers([
+    item("ROW-VOID", 3, 1, { l: 400, w: 400, h: 200 }),
+  ], { l: 950, w: 1000, h: 200, doorW: 1000, doorH: 200 }, {
+    cartonTolerance: 0, cartonGap: 0, skuGap: 0, doorClearance: 0, sideClearance: 0, topClearance: 0,
+  });
+  const plan = result.containers[0];
+  assert.equal(plan.remainingLength, 150);
+  assert.equal(plan.maximumHorizontalVoid, 550);
+  assert.equal(plan.requiresSecuring, true);
+  assertValidGeometry(result);
 });
 
 test("plans different upright carton sizes without crossing effective boundaries", () => {
@@ -46,6 +112,23 @@ test("plans different upright carton sizes without crossing effective boundaries
   assert.equal(result.plannedBoxes, 34);
   assert.equal(result.plannedEa, 15400);
   assertValidGeometry(result);
+});
+
+test("interlocks unused SKU boundary contours without overlapping physical cartons", () => {
+  const items = [
+    item("INTERLOCK-A", 5, 1, { l: 480, w: 380, h: 350 }),
+    item("INTERLOCK-B", 40, 1, { l: 480, w: 380, h: 350 }),
+  ];
+  const strict = planMixedContainers(items, CONTAINER, { allowSkuInterlock: false });
+  const optimized = planMixedContainers(items, CONTAINER, { allowSkuInterlock: true });
+  assert.equal(strict.containers.length, 1);
+  assert.equal(optimized.containers.length, 1);
+  assert.equal(optimized.containers[0].skuBoundaryInterlocks, 1);
+  assert.ok(optimized.containers[0].usedLength < strict.containers[0].usedLength);
+  assert.equal(optimized.plannedBoxes, strict.plannedBoxes);
+  assert.equal(optimized.plannedEa, strict.plannedEa);
+  assert.deepEqual(validateMixedPlan(optimized), { ok: true, errors: [] });
+  assertValidGeometry(optimized);
 });
 
 test("mixes 0 and 90 degree floor orientations inside one SKU zone to reduce occupied length", () => {
@@ -81,6 +164,10 @@ test("plans carton and pallet SKUs together without converting pallet rows back 
   assert.equal(palletBlock.partialPalletBoxes, 4);
   assert.equal(palletBlock.layers, 2);
   assert.ok(palletBlock.palletStackHeight >= 1200 && palletBlock.palletStackHeight <= 1800);
+  const palletVolume = 4 * 1000 * 1200 * palletBlock.palletStackHeight / 1_000_000_000;
+  const cartonVolume = 20 * 480 * 380 * 350 / 1_000_000_000;
+  assert.ok(Math.abs(palletBlock.volumeCbm - palletVolume) < 1e-12);
+  assert.ok(Math.abs(result.totalRequiredVolumeCbm - palletVolume - cartonVolume) < 1e-12);
   assertValidGeometry(result);
 });
 

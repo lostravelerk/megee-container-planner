@@ -42,6 +42,16 @@ test("finds a mixed-orientation plan that beats uniform rows", () => {
   assertValidPlan(plan, 1200, 1000);
 });
 
+test("exactly corrects compact windmill layouts missed by regular strips", () => {
+  const fiveByFive = packRectangles(5, 5, 2, 3, 0);
+  assert.equal(fiveByFive.count, 4);
+  assertValidPlan(fiveByFive, 5, 5);
+
+  const sevenBySeven = packRectangles(7, 7, 3, 4, 0);
+  assert.equal(sevenBySeven.count, 4);
+  assertValidPlan(sevenBySeven, 7, 7);
+});
+
 test("clearance changes a marginal five-item fit to three", () => {
   const plan = packRectangles(1200, 1000, 600, 400, 5);
   assert.equal(plan.count, 3);
