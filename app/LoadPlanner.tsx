@@ -59,8 +59,8 @@ type SavedPlan = {
 
 const PLAN_STORAGE_KEY = "megee-loadwise-plans-v1";
 const PRODUCT_STORAGE_KEY = "megee-container-products-v2";
-const APP_VERSION = "2.6.0";
-const ALGORITHM_VERSION = "LW 2.6 / KIT 1.0";
+const APP_VERSION = "2.6.1";
+const ALGORITHM_VERSION = "LW 2.7 / KIT 1.1";
 const BUILD_VERSION = import.meta.env.VITE_BUILD_COMMIT || "local";
 
 const CONTAINERS: Record<string, Dimensions> = {

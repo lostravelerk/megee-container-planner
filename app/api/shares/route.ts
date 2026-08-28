@@ -82,6 +82,9 @@ function sanitizePayload(input: unknown) {
         palletTolerance: finiteNumber(config.palletTolerance, 0, 200),
         edgeInset: finiteNumber(config.edgeInset, 0, 200),
         allowSkuInterlock: config.allowSkuInterlock !== false,
+        layoutStrategy: ["maximum", "entered-order", "clear-zones"].includes(text(config.layoutStrategy))
+          ? text(config.layoutStrategy)
+          : "maximum",
       };
     })(),
   };

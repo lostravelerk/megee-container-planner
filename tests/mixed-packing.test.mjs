@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cartonsForDemand, planMixedContainers, validateMixedPlan } from "../lib/mixedPacking.js";
+import {
+  cartonsForDemand,
+  planMixedContainerOptions,
+  planMixedContainers,
+  validateMixedPlan,
+} from "../lib/mixedPacking.js";
 
 const CONTAINER = { l: 12032, w: 2352, h: 2698 };
 
@@ -292,6 +297,50 @@ test("keeps the tail carton in the last floor position with no full carton above
   assert.equal(position.partialOnTop, true);
   assert.ok(position.stackUnits <= block.layers);
   assertValidGeometry(result);
+});
+
+test("keeps an incomplete pallet top on the uppermost level and never supports another pallet with it", () => {
+  const base = {
+    ...item("PALLET-TOP", 1, 1, { l: 420, w: 320, h: 280 }),
+    packaging: "pallet",
+    pallet: { l: 1000, w: 1200, h: 150 },
+    palletOverhang: 0,
+  };
+  const probe = planMixedContainers([base], CONTAINER);
+  const cartonsPerPallet = probe.items[0].palletPlan.cartonsPerPallet;
+  const result = planMixedContainers([
+    { ...base, productQuantity: cartonsPerPallet + 1 },
+  ], CONTAINER);
+  const block = result.containers[0].blocks[0];
+  const palletLoads = block.positions.flatMap((position) => position.palletLoads);
+  assert.equal(palletLoads.length, 2);
+  assert.equal(palletLoads.reduce((sum, load) => sum + load.cartons, 0), cartonsPerPallet + 1);
+  assert.equal(palletLoads[0].topFlat, true);
+  assert.equal(palletLoads.at(-1).topFlat, false);
+  for (const position of block.positions) {
+    assert.ok(position.palletLoads.slice(0, -1).every((load) => load.canBearUpperPallet));
+  }
+  assert.equal(block.incompletePalletTops, 1);
+  assert.ok(block.palletTopFillPositions > 0);
+  assert.deepEqual(validateMixedPlan(result), { ok: true, errors: [] });
+});
+
+test("offers audited maximum-capacity, entered-sequence and clear-zone layout choices", () => {
+  const items = [
+    item("MIX-A", 96_005, 500, { l: 480, w: 380, h: 350 }),
+    item("MIX-B", 181_003, 1000, { l: 420, w: 320, h: 280 }),
+    item("MIX-C", 40_001, 600, { l: 520, w: 410, h: 300 }),
+  ];
+  const options = planMixedContainerOptions(items, CONTAINER);
+  assert.deepEqual(options.map((option) => option.id), ["maximum", "entered-order", "clear-zones"]);
+  assert.equal(options[0].recommended, true);
+  assert.ok(options[0].candidateCount >= 3);
+  for (const option of options) {
+    assert.deepEqual(validateMixedPlan(option.result), { ok: true, errors: [] });
+    assert.equal(option.result.totalRequiredBoxes, options[0].result.totalRequiredBoxes);
+    assert.equal(option.result.totalDemandEa, options[0].result.totalDemandEa);
+  }
+  assert.ok(options[0].result.containers.length <= options[1].result.containers.length);
 });
 
 test("rejects a pallet footprint that cannot cross the effective container section", () => {
