@@ -127,7 +127,12 @@ async function main() {
     `document.readyState === 'complete' && document.body.innerText.includes('集装箱装柜规划') && document.body.innerText.includes('按柜容反算')`,
     "v3 planner",
   );
-  await clickText("按柜容反算");
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await clickText("按柜容反算");
+    if (await evaluate(`document.querySelectorAll('[aria-label="数量规则"]').length >= 2`)) break;
+    await sleep(100);
+  }
+  await waitFor(`document.querySelectorAll('[aria-label="数量规则"]').length >= 2`, "hydrated capacity controls");
   await setSelector(".mixed-config select", "20GP");
 
   const rows = [
