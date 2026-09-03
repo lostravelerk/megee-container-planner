@@ -349,7 +349,7 @@ export default function LoadPlanner({ initialShareId = "" }: { initialShareId?: 
   return (
     <main className="app-shell-v3">
       <header className="app-header-v3">
-        <div className="brand-wordmark"><b>MEGEE</b><span>{tr("集装箱装柜规划", "CONTAINER PLANNER")}</span></div>
+        <div className="brand-wordmark"><b>MEGEE</b></div>
         <nav aria-label={tr("主导航", "Primary navigation")}>
           <button className={view === "planner" ? "active" : ""} onClick={() => setView("planner")}>{tr("装柜规划", "Loading Planner")}</button>
           <button className={view === "library" ? "active" : ""} onClick={() => setView("library")}>{tr("装柜方案库", "Saved Plans")}<small>{plans.length}</small></button>

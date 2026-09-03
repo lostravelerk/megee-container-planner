@@ -1578,10 +1578,12 @@ export default function MixedPlanner({
   };
   return (
     <>
-      <section className={`mixed-workspace${htmlReportOpen ? " html-report-active-workspace" : ""}`} aria-labelledby="mixed-title">
+      <section
+        className={`mixed-workspace${htmlReportOpen ? " html-report-active-workspace" : ""}`}
+        aria-label={tr("装柜规划工作区", "Loading planner workspace")}
+      >
         <div className="mixed-toolbar panel">
           <div className="mixed-title-block">
-            <h2 id="mixed-title">{tr("集装箱装柜规划", "Container Loading Plan")}</h2>
             <label>
               <span>{tr("方案名称", "Plan name")}</span>
               <input

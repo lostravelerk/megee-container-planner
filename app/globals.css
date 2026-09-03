@@ -1769,12 +1769,12 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
   .mixed-workspace .panel, .workspace-commandbar, .sap-table-shell, .library-toolbar {
     border: 1px solid #d7e0e5; border-radius: 5px; background: var(--sap-surface); box-shadow: none;
   }
-  .mixed-toolbar { min-height: 72px; padding: 12px 14px; border-radius: 5px; }
-  .mixed-title-block { min-width: 360px; display: grid; grid-template-columns: auto minmax(180px,380px); align-items: center; gap: 2px 14px; }
+  .mixed-toolbar { min-height: 58px; padding: 9px 12px; border-radius: 5px; }
+  .mixed-title-block { min-width: 440px; flex: 1 1 520px; }
   .mixed-title-block .section-kicker { grid-column: 1 / -1; }
   .mixed-title-block h2 { font-size: 24px; white-space: nowrap; }
-  .mixed-title-block label { display: grid; grid-template-columns: auto minmax(160px,1fr); align-items: center; gap: 8px; color: #40596b; font-size: 12px; font-weight: 700; }
-  .mixed-title-block input { min-height: 36px; margin: 0; padding: 6px 9px; font-size: 13px; }
+  .mixed-title-block label { max-width: 620px; display: grid; grid-template-columns: auto minmax(260px,1fr); align-items: center; gap: 9px; color: #40596b; font-size: 13px; font-weight: 700; }
+  .mixed-title-block input { min-height: 38px; margin: 0; padding: 6px 10px; font-size: 14px; }
   .mixed-primary-actions { gap: 5px; }
   .mixed-primary-actions button { min-height: 36px; padding: 6px 10px; border-radius: 3px; font-size: 12px; white-space: nowrap; }
   .mixed-primary-actions button.primary { background: var(--sap-blue); }
