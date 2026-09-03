@@ -1,4 +1,4 @@
-const CACHE_NAME = "megee-container-planner-v3.0.0";
+const CACHE_NAME = "megee-container-planner-v3.1.1";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {

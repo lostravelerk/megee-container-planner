@@ -7,7 +7,7 @@ import type { Language, PlannerSnapshot, SavedPlanRecord } from "./plannerTypes"
 type WorkspaceView = "planner" | "library";
 type LibraryFilterKey = "title" | "mode" | "container" | "status";
 
-const APP_VERSION = "3.1.0";
+const APP_VERSION = "3.1.1";
 const ALGORITHM_VERSION = "MIX 2.1";
 const BUILD_VERSION = import.meta.env.VITE_BUILD_COMMIT || "local";
 const PLAN_STORAGE_KEY = "megee-container-saved-plans-v3";
