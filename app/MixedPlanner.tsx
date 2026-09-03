@@ -77,8 +77,11 @@ function formatNumber(value: number, digits = 0) {
 function ReportBrand({ className = "" }: { className?: string }) {
   return (
     <div className={`report-wordmark ${className}`} aria-label="MEGEE COSPACK">
-      <b>MEGEE</b>
-      <span>PACKAGING PRODUCTIVITY</span>
+      <svg viewBox="0 0 42 42" aria-hidden="true">
+        <circle cx="21" cy="21" r="19" />
+        <path d="M9 25 15.5 15 21 25l5.5-10L33 25" />
+      </svg>
+      <span>MEGEE<br />COSPACK</span>
     </div>
   );
 }
@@ -504,7 +507,7 @@ function MixedSideView({
   return (
     <section className="mixed-side-view" aria-label={isEnglish ? "Longitudinal side view" : "纵向侧视图"}>
       <h4>
-        <b>{isEnglish ? "LONGITUDINAL SIDE VIEW" : "纵向侧视图"}</b>
+        <b>{isEnglish ? "LONGITUDINAL HEIGHT ENVELOPE" : "纵向高度包络图"}</b>
         <span>
           {isEnglish
             ? `Length ${formatNumber(container.l)} mm · height ${formatNumber(container.h)} mm`
@@ -519,8 +522,8 @@ function MixedSideView({
           role="img"
           aria-label={
             isEnglish
-              ? "Container longitudinal height and stacking projection"
-              : "集装箱纵向高度与堆叠投影"
+              ? "Container longitudinal maximum-height envelope; the highest load at each longitudinal coordinate is shown"
+              : "集装箱纵向最大高度包络；每个纵向坐标仅显示该处最高货物"
           }
         >
           <defs>
@@ -877,7 +880,7 @@ export default function MixedPlanner({
           ...emptyRow(index + 1, row.id || `saved-${index + 1}`),
           ...row,
         }))
-      : [emptyRow(1), emptyRow(2), emptyRow(3)],
+      : [emptyRow(1)],
   );
   const [planningMode, setPlanningMode] = useState<PlanningMode>(initialPlan?.planningMode || "order");
   const [containerCount, setContainerCount] = useState(initialPlan?.containerCount || 1);
@@ -1082,7 +1085,14 @@ export default function MixedPlanner({
   );
   const layoutOptions = useMemo(
     () => planningMode === "capacity" && capacityPlan
-      ? [{ id: "maximum", recommended: true, candidateCount: capacityPlan.evaluations, result: capacityPlan.result }]
+      ? [{
+          id: "maximum",
+          recommended: true,
+          candidateCount: capacityPlan.evaluations,
+          orderSearchComplete: false,
+          searchMethod: "quantity-and-geometry-search",
+          result: capacityPlan.result,
+        }]
       : planMixedContainerOptions(validItems, container, loadingConfig),
     [
       planningMode,
@@ -1215,6 +1225,27 @@ export default function MixedPlanner({
   const securingRequired = result.containers.some(
     (plan) => plan.requiresSecuring,
   );
+  const palletTopActionRequired = result.containers.some(
+    (plan) => plan.incompletePalletTops > 0,
+  );
+  const executionConditional = securingRequired || palletTopActionRequired;
+  const chosenLayoutOption = layoutOptions.find(
+    (option) => option.id === layoutStrategy,
+  ) ?? layoutOptions[0];
+  const layoutAuditText = planningMode === "capacity"
+    ? tr(
+        `采购数量与实际装柜联合搜索：评估 ${chosenLayoutOption?.candidateCount ?? 0} 个候选；最终方案通过边界、间隙、高度和数量守恒复核。`,
+        `Joint quantity and physical-loading search: ${chosenLayoutOption?.candidateCount ?? 0} candidates evaluated; the selected plan passed boundary, clearance, height and quantity-conservation checks.`,
+      )
+    : chosenLayoutOption?.orderSearchComplete
+      ? tr(
+          `已完整比较 ${chosenLayoutOption.candidateCount} 种 SKU 装载顺序；按柜数最少、总占长最短择优，并逐项通过几何复核。`,
+          `All ${chosenLayoutOption.candidateCount} SKU loading sequences were compared; the result minimizes container count then used length and passes the item-level geometry audit.`,
+        )
+      : tr(
+          `已比较 ${chosenLayoutOption?.candidateCount ?? 0} 种确定性装载顺序；在已搜索候选中按柜数最少、总占长最短择优，并逐项通过几何复核。`,
+          `${chosenLayoutOption?.candidateCount ?? 0} deterministic loading sequences were compared; the best searched candidate minimizes container count then used length and passes the item-level geometry audit.`,
+        );
   const reportDate = new Intl.DateTimeFormat(isEnglish ? "en-GB" : "zh-CN", {
     year: "numeric",
     month: "2-digit",
@@ -1535,26 +1566,21 @@ export default function MixedPlanner({
         : 0,
     },
   });
-  const saveCurrentPlan = (status: "draft" | "confirmed") => {
+  const saveCurrentPlan = () => {
     if (!onSavePlan) return;
-    if (!reportReady && status === "confirmed") {
+    if (!reportReady) {
       setSaveNotice(tr("方案未通过自检，不能确认为正式方案。", "The plan has not passed preflight and cannot be confirmed."));
       return;
     }
-    const saved = onSavePlan(buildSnapshot(), status);
+    const saved = onSavePlan(buildSnapshot(), "confirmed");
     setPlanTitle(saved.title);
-    setSaveNotice(
-      status === "confirmed"
-        ? tr(`已确认并保存 ${saved.id} · R${saved.revision}`, `Confirmed and saved ${saved.id} · R${saved.revision}`)
-        : tr(`草稿已保存 ${saved.id} · R${saved.revision}`, `Draft saved ${saved.id} · R${saved.revision}`),
-    );
+    setSaveNotice(tr(`方案已保存 ${saved.id} · R${saved.revision}`, `Plan saved ${saved.id} · R${saved.revision}`));
   };
   return (
     <>
       <section className={`mixed-workspace${htmlReportOpen ? " html-report-active-workspace" : ""}`} aria-labelledby="mixed-title">
         <div className="mixed-toolbar panel">
           <div className="mixed-title-block">
-            <p className="section-kicker">LOADING PLAN</p>
             <h2 id="mixed-title">{tr("集装箱装柜规划", "Container Loading Plan")}</h2>
             <label>
               <span>{tr("方案名称", "Plan name")}</span>
@@ -1566,29 +1592,32 @@ export default function MixedPlanner({
             </label>
           </div>
           <div className="mixed-primary-actions">
-            <button onClick={() => saveCurrentPlan("draft")}>{tr("保存草稿", "Save draft")}</button>
-            <button disabled={!reportReady} onClick={() => saveCurrentPlan("confirmed")}>{tr("确认保存", "Confirm")}</button>
-            <button disabled={!reportReady} onClick={() => setHtmlReportOpen(true)}>{tr("HTML 报告", "HTML report")}</button>
-            <button
-              disabled={!reportReady}
-              onClick={() => {
-                setShareOpen((current) => !current);
-                setShareError("");
-              }}
-            >
-              {tr("网页分享", "Share Web Plan")}
-            </button>
-            <button
-              onClick={printPackingList}
-            >
-              {tr("Packing List PDF", "Packing List PDF")}
-            </button>
-            <button
-              className="primary"
-              onClick={printReport}
-            >
-              {tr("打印 / 另存为 PDF", "Print / Save as PDF")} ↗
-            </button>
+            {reportReady ? (
+              <>
+                <button onClick={saveCurrentPlan}>{tr("保存方案", "Save plan")}</button>
+                <button
+                  onClick={() => {
+                    setShareOpen((current) => !current);
+                    setShareError("");
+                  }}
+                >
+                  {tr("网页分享", "Share Web Plan")}
+                </button>
+                <button onClick={printPackingList}>
+                  {tr("装箱单 PDF", "Packing list PDF")}
+                </button>
+                <button
+                  className="primary"
+                  onClick={() => setHtmlReportOpen(true)}
+                >
+                  {tr("装柜报告 / PDF", "Loading report / PDF")}
+                </button>
+              </>
+            ) : (
+              <span className="mixed-toolbar-hint">
+                {tr("完成产品与包装数据后生成方案", "Complete product and packaging data to generate a plan")}
+              </span>
+            )}
           </div>
         </div>
         {saveNotice ? <div className="save-notice" role="status">{saveNotice}</div> : null}
@@ -1759,11 +1788,14 @@ export default function MixedPlanner({
               ))}
             </select>
           </label>
-          <div className="mixed-config-status">
-            <span>{tr("高度向上", "Upright only")}</span>
-            <span>{tr("底面允许 90°", "Base rotation 90°")}</span>
-            <span>{tr("几何自检最优排布", "Geometry-audited optimum")}</span>
-            <span>{tr("尾箱置顶禁压", "Partial carton protected")}</span>
+          <div
+            className="mixed-config-status"
+            title={tr(
+              "外箱高度向上；底面允许旋转 90°；自动检查边界、间隙与重叠；尾箱置顶且禁止受压。",
+              "Cartons stay upright; base rotation by 90° is allowed; boundaries, clearances and overlaps are audited; partial cartons stay on top without compression.",
+            )}
+          >
+            <span>{tr("安全规则已启用：向上 · 可旋转 · 防重叠 · 尾箱禁压", "Safety rules active: upright · rotation · no overlap · partial carton protected")}</span>
           </div>
           <details className="mixed-advanced-config">
             <summary>
@@ -1883,6 +1915,12 @@ export default function MixedPlanner({
                   />
                 </div>
               </label>
+              <p className="mixed-parameter-provenance">
+                {tr(
+                  "来源：柜体与门洞为设备参考值；以上间隙为企业工程默认值，并非统一行业定值。任一水平方向总空隙按 CTU Code 150 mm 控制线复核，执行前仍须实测柜体与包装。",
+                  "Source: container and door dimensions are equipment references; clearances above are company engineering defaults, not universal industry constants. Total void in any horizontal direction is checked against the CTU Code 150 mm control line; remeasure the container and packages before loading.",
+                )}
+              </p>
             </div>
           </details>
         </div>
@@ -1890,8 +1928,7 @@ export default function MixedPlanner({
         <div className="mixed-input-panel panel">
           <div className="mixed-section-heading">
             <div>
-              <p className="section-kicker">01 · INPUT</p>
-              <h3>{tr("产品装柜清单", "Product Loading Grid")}</h3>
+              <h3>{tr("产品与包装清单", "Products & Packaging")}</h3>
             </div>
             <div>
               <button
@@ -1906,7 +1943,7 @@ export default function MixedPlanner({
               </button>
               <button
                 onClick={() => {
-                  setRows([emptyRow(1), emptyRow(2), emptyRow(3)]);
+                  setRows([emptyRow(1)]);
                 }}
               >
                 {tr("清空", "Clear")}
@@ -2176,6 +2213,13 @@ export default function MixedPlanner({
                   "Cartons are rounded up from ordered product quantities. Quantity need not be a multiple of EA/BOX; a partial carton reserves one full top position without load above.",
                 )}
           </p>
+          {!baseItems.length ? (
+            <p className="mixed-inline-empty">
+              {planningMode === "capacity"
+                ? tr("请填写 EA/BOX 和外箱尺寸；产品数量由柜容反算。", "Enter EA/BOX and carton dimensions; quantity is calculated from capacity.")
+                : tr("请填写产品数量、EA/BOX 和外箱尺寸。", "Enter product quantity, EA/BOX and carton dimensions.")}
+            </p>
+          ) : null}
           {planningMode === "capacity" && baseItems.length ? (
             <div className={`kit-capacity-banner${capacityPlan && !capacityPlan.error ? " ready" : " error"}`}>
               <div>
@@ -2220,7 +2264,7 @@ export default function MixedPlanner({
           ) : null}
         </div>
 
-        <div className="mixed-summary-grid">
+        {validItems.length ? <div className="mixed-summary-grid">
           <article>
             <span>{tr("有效 SKU", "Valid SKUs")}</span>
             <strong>{validItems.length}</strong>
@@ -2255,7 +2299,7 @@ export default function MixedPlanner({
             <strong>{result.containers.length || "—"}</strong>
             <small>{containerType}</small>
           </article>
-        </div>
+        </div> : null}
 
         {result.unplanned.length > 0 && (
           <div className="mixed-error">
@@ -2499,27 +2543,7 @@ export default function MixedPlanner({
               </section>
             ) : null}
           </div>
-        ) : (
-          <div className="mixed-empty panel">
-            <b>
-              {tr(
-                "请先完成至少一行有效产品数据",
-                "Complete at least one valid product row",
-              )}
-            </b>
-            <span>
-              {planningMode === "capacity"
-                ? tr(
-                    "必填：至少一个组件、EA/BOX、外箱尺寸；选择托盘时还必须填写托盘尺寸。齐套产品数量由系统自动最大化。",
-                    "Required: at least one component, EA/BOX and carton size; pallet dimensions are also required for palletized rows. Kit quantity is maximized automatically.",
-                  )
-                : tr(
-                    "必填：产品数量、EA/BOX、外箱尺寸；选择托盘时还必须填写托盘尺寸。",
-                    "Required: product quantity, EA/BOX and carton size; pallet dimensions are also required for palletized rows.",
-                  )}
-            </span>
-          </div>
-        )}
+        ) : null}
       </section>
 
       <section
@@ -2535,7 +2559,13 @@ export default function MixedPlanner({
         {htmlReportOpen ? (
           <div className="html-report-toolbar" data-print-hidden="true">
             <b>{tr("HTML 装柜报告预览", "HTML loading report preview")}</b>
-            <span>{reportReady ? tr("自检通过", "Preflight passed") : tr("尚未通过自检", "Preflight pending")}</span>
+            <span>
+              {reportReady
+                ? executionConditional
+                  ? tr("数据与几何通过 · 现场处置待确认", "Data and geometry passed · site action pending")
+                  : tr("数据与几何校验通过", "Data and geometry passed")
+                : tr("尚未通过自检", "Preflight pending")}
+            </span>
             <button onClick={() => setHtmlReportOpen(false)}>{tr("返回规划器", "Back to planner")}</button>
             <button className="primary" onClick={printReport}>{tr("打印 / PDF", "Print / PDF")}</button>
           </div>
@@ -2544,9 +2574,7 @@ export default function MixedPlanner({
           <div>
             <ReportBrand className="report-brand-logo" />
             <p>
-              {isEnglish
-                ? "ZHEJIANG MEGEE INDUSTRY CO., LTD."
-                : "浙江美集实业有限公司"}
+              {tr("装载工程报告", "LOADING ENGINEERING REPORT")}
             </p>
             <h1>
               {planningMode === "capacity"
@@ -2583,6 +2611,10 @@ export default function MixedPlanner({
               <dd>{planTitle || "—"}</dd>
             </div>
             <div>
+              <dt>{tr("出具单位", "Issued by")}</dt>
+              <dd>{tr("浙江美集实业有限公司", "Zhejiang Megee Industry Co., Ltd.")}</dd>
+            </div>
+            <div>
               <dt>{tr("软件 / 算法", "Software / Algorithm")}</dt>
               <dd>
                 v{appVersion} / {algorithmVersion} / {buildVersion}
@@ -2593,14 +2625,14 @@ export default function MixedPlanner({
               <dd>
                 {result.unplanned.length
                   ? tr("存在异常 · 禁止执行", "EXCEPTION · DO NOT EXECUTE")
-                  : securingRequired
+                  : executionConditional
                     ? tr(
-                        "装载图完成 · 系固待确认",
-                        "PLAN COMPLETE · SECURING PENDING",
+                        "数据与几何通过 · 现场处置待确认",
+                        "DATA & GEOMETRY PASS · SITE ACTION PENDING",
                       )
                     : tr(
-                        "待复核 · 规则内工程最优",
-                        "PENDING REVIEW · ENGINEERING OPTIMUM",
+                        "数据与几何通过 · 待现场复核",
+                        "DATA & GEOMETRY PASS · SITE REVIEW PENDING",
                       )}
               </dd>
             </div>
@@ -2641,10 +2673,15 @@ export default function MixedPlanner({
         </div>
         <div className="report-condition-line">
           <b>
-            {tr(
-              "数据与报告结构自检：通过",
-              "DATA & REPORT STRUCTURE PREFLIGHT: PASS",
-            )}
+            {executionConditional
+              ? tr(
+                  "数据、数量与几何自检：通过；现场处置项待确认",
+                  "DATA, QUANTITY & GEOMETRY: PASS; SITE ACTION PENDING",
+                )
+              : tr(
+                  "数据、数量与几何自检：通过",
+                  "DATA, QUANTITY & GEOMETRY: PASS",
+                )}
           </b>
           <span>
             {tr("箱差 / 箱隙 · 门 / 侧 / 顶", "CTN TOL./GAP · DOOR/SIDE/TOP")}：
@@ -2655,6 +2692,13 @@ export default function MixedPlanner({
             {tr("参考门洞", "REFERENCE DOOR")}：
             {formatNumber(result.config.doorWidth)} ×{" "}
             {formatNumber(result.config.doorHeight)} mm
+          </span>
+          <span>
+            {tr("参数来源", "PARAMETER BASIS")}：
+            {tr(
+              "设备参考值 + 企业工程默认值；水平总空隙按 CTU Code 150 mm 控制线",
+              "equipment references + company engineering defaults; horizontal total void checked against the CTU Code 150 mm control line",
+            )}
           </span>
           {result.totalRequiredPallets ? (
             <span>
@@ -2672,6 +2716,7 @@ export default function MixedPlanner({
                 ? tr("按输入顺序", "ENTERED SEQUENCE")
                 : tr("清晰分区", "CLEAR SKU ZONES")}
           </span>
+          <span className="report-layout-audit">{layoutAuditText}</span>
           {planningMode === "capacity" ? (
             <span>
               {tr("采购数量规则", "PROCUREMENT QUANTITY RULES")}：
@@ -2687,71 +2732,52 @@ export default function MixedPlanner({
               "PRODUCT PARAMETERS & SYSTEM CALCULATION",
             )}
           </h2>
-          <table className="mixed-product-identity-table">
+          <table className="mixed-product-identity-table mixed-packaging-table report-product-master-table">
             <thead>
               <tr>
-                <th>{tr("系列", "Series")}</th>
-                <th>{tr("产品代码", "Code")}</th>
-                <th>{tr("品名规格", "Product / specification")}</th>
+                <th>#</th>
+                <th>{tr("产品信息", "Product")}</th>
                 <th>{tr("产品数量", "Product quantity")}</th>
                 <th>EA/BOX</th>
-                <th>{tr("总箱数", "Total cartons")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {validItems.map((item) => (
-                <tr key={item.id}>
-                  <td>{item.series || "—"}</td>
-                  <td>{item.code || "—"}</td>
-                  <td>{item.name || "—"}</td>
-                  <td>{formatNumber(item.productQuantity)} EA</td>
-                  <td>{formatNumber(item.eaPerBox)}</td>
-                  <td>
-                    {formatNumber(
-                      cartonsForDemand(item.productQuantity, item.eaPerBox),
-                    )}{" "}
-                    BOX
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <table className="mixed-packaging-table">
-            <thead>
-              <tr>
-                <th>{tr("产品代码", "Code")}</th>
                 <th>{tr("外箱 L×W×H", "Carton L×W×H")}</th>
-                <th>{tr("包装方式", "Packaging")}</th>
-                <th>{tr("托盘 L×W×H", "Pallet L×W×H")}</th>
-                <th>{tr("托盘边界 / 装柜外廓", "Pallet boundary / loading envelope")}</th>
+                <th>{tr("包装 / 托盘", "Pack / pallet")}</th>
+                <th>{tr("总箱数", "Total cartons")}</th>
                 <th>{tr("CBM 材积", "Packaging CBM")}</th>
-                <th>{tr("尾箱数量", "Last-carton quantity")}</th>
+                <th>{tr("尾箱", "Partial carton")}</th>
               </tr>
             </thead>
             <tbody>
-              {validItems.map((item) => {
+              {validItems.map((item, index) => {
                 const remainder = item.productQuantity % item.eaPerBox;
                 const calculated = calculatedItems.get(item.id);
                 return (
                   <tr key={item.id}>
-                    <td>{item.code || "—"}</td>
+                    <td>{index + 1}</td>
+                    <td className="report-product-identity">
+                      <b>{item.code || "—"}</b>
+                      <span>{item.name || "—"}</span>
+                      {item.series ? <small>{tr("系列", "Series")} {item.series}</small> : null}
+                    </td>
+                    <td className="numeric">{formatNumber(item.productQuantity)} EA</td>
+                    <td className="numeric">{formatNumber(item.eaPerBox)}</td>
                     <td>
                       {item.carton.l} × {item.carton.w} × {item.carton.h} mm
                     </td>
                     <td>
-                      {item.packaging === "pallet"
-                        ? tr("托盘", "PALLET")
+                      {item.packaging === "pallet" && item.pallet
+                        ? <>
+                            <b>{tr("托盘", "PALLET")} · {item.pallet.l} × {item.pallet.w} × {item.pallet.h} mm</b>
+                            <small>
+                              {calculated?.palletPlan.overhang > 0
+                                ? `${tr("允许外伸", "Overhang")} ${calculated.palletPlan.overhang} mm/side`
+                                : `${tr("退边", "Inset")} ${calculated?.palletPlan.edgeInset ?? 0} mm/side`}
+                              {calculated ? ` · ${formatNumber(calculated.loadingUnit.l)} × ${formatNumber(calculated.loadingUnit.w)} mm` : ""}
+                            </small>
+                          </>
                         : tr("纸箱", "CARTON")}
                     </td>
-                    <td>
-                      {item.packaging === "pallet" && item.pallet
-                        ? `${item.pallet.l} × ${item.pallet.w} × ${item.pallet.h} mm`
-                        : "—"}
-                    </td>
-                    <td>
-                      {calculated?.packaging === "pallet"
-                        ? `${calculated.palletPlan.overhang > 0 ? `${tr("外伸", "overhang")} ${calculated.palletPlan.overhang}` : `${tr("退边", "inset")} ${calculated.palletPlan.edgeInset}`} mm/side · ${formatNumber(calculated.loadingUnit.l)} × ${formatNumber(calculated.loadingUnit.w)} mm`
-                        : "—"}
+                    <td className="numeric">
+                      {formatNumber(cartonsForDemand(item.productQuantity, item.eaPerBox))} BOX
                     </td>
                     <td>
                       {formatNumber(calculated?.requiredVolumeCbm ?? 0, 2)} CBM

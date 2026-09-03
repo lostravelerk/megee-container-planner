@@ -468,7 +468,9 @@ test("offers audited maximum-capacity, entered-sequence and clear-zone layout ch
   const options = planMixedContainerOptions(items, CONTAINER);
   assert.deepEqual(options.map((option) => option.id), ["maximum", "entered-order", "clear-zones"]);
   assert.equal(options[0].recommended, true);
-  assert.ok(options[0].candidateCount >= 3);
+  assert.equal(options[0].candidateCount, 6);
+  assert.equal(options[0].orderSearchComplete, true);
+  assert.equal(options[0].searchMethod, "exhaustive-order");
   for (const option of options) {
     assert.deepEqual(validateMixedPlan(option.result), { ok: true, errors: [] });
     assert.equal(option.result.totalRequiredBoxes, options[0].result.totalRequiredBoxes);

@@ -6,7 +6,7 @@ import { join } from "node:path";
 const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const port = 9340;
 const profile = await mkdtemp(join(tmpdir(), "megee-v3-pdf-qa-"));
-const pdfPath = "/Users/coady/Documents/Codex/CTN QTY/output/reports/404-24牙喷头-20GP最大齐套装柜报告-v3.0.0.pdf";
+const pdfPath = "/Users/coady/Documents/Codex/CTN QTY/output/reports/404-24牙喷头-20GP最大齐套装柜报告-v3.1.0.pdf";
 const child = spawn(chrome, [
   "--headless=new",
   "--disable-gpu",
@@ -129,11 +129,13 @@ async function main() {
   );
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await clickText("按柜容反算");
-    if (await evaluate(`document.querySelectorAll('[aria-label="数量规则"]').length >= 2`)) break;
+    if (await evaluate(`document.querySelectorAll('[aria-label="数量规则"]').length >= 1`)) break;
     await sleep(100);
   }
-  await waitFor(`document.querySelectorAll('[aria-label="数量规则"]').length >= 2`, "hydrated capacity controls");
+  await waitFor(`document.querySelectorAll('[aria-label="数量规则"]').length >= 1`, "hydrated capacity controls");
   await setSelector(".mixed-config select", "20GP");
+  await clickText("添加行");
+  await waitFor(`document.querySelectorAll('[aria-label="数量规则"]').length >= 2`, "second product row");
 
   const rows = [
     { series: "404", code: "PUMP-404-24", name: "404/24牙喷头", ea: 1000, l: 500, w: 400, h: 260 },
@@ -157,7 +159,7 @@ async function main() {
     `(() => {
       const report = document.querySelector('.mixed-print-report');
       const quantities = [...document.querySelectorAll('[aria-label="产品数量"]')].slice(0,2).map((input) => input.value);
-      const confirm = [...document.querySelectorAll('button')].find((button) => button.textContent.includes('确认保存'));
+      const confirm = [...document.querySelectorAll('button')].find((button) => button.textContent.includes('保存方案'));
       return report?.dataset.completeKits === '144000'
         && report?.dataset.totalBoxes === '373'
         && Math.abs(Number(report?.dataset.totalCbm) - 23.778144) < 0.000001
@@ -167,8 +169,10 @@ async function main() {
     "audited 20GP equal-component result",
   );
 
+  await clickText("装柜报告 / PDF");
+  await waitFor(`Boolean(document.querySelector('.mixed-print-report.html-report-open'))`, "HTML loading report");
   const preflight = await evaluate(`(async () => {
-    const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent.includes('打印 / 另存为 PDF'));
+    const button = [...document.querySelectorAll('.html-report-toolbar button')].find((entry) => entry.textContent.includes('打印 / PDF'));
     if (!button || button.disabled) return { ready: false, printed: false };
     window.__qaPrinted = false;
     window.print = () => { window.__qaPrinted = true; };
@@ -194,8 +198,11 @@ async function main() {
   if (preflight.completeKits !== 144000 || preflight.totalEa !== 288000 || preflight.totalBoxes !== 373 || preflight.topViews !== 1 || preflight.sideViews !== 1 || preflight.endViews !== 1 || preflight.palletViews !== 0)
     throw new Error(`Report data/view audit failed: ${JSON.stringify(preflight)}`);
 
+  await clickText("返回规划器");
+  await waitFor(`!document.querySelector('.mixed-print-report.html-report-open')`, "planner return");
+
   const packingPreflight = await evaluate(`(async () => {
-    const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent.includes('Packing List PDF'));
+    const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent.includes('装箱单 PDF'));
     if (!button || button.disabled) return { ready: false, printed: false };
     window.__qaPackingPrinted = false;
     window.print = () => { window.__qaPackingPrinted = true; };

@@ -28,7 +28,8 @@ test("server-renders the compact v3 production planner", async () => {
   assert.match(html, /产品代码/);
   assert.match(html, /装箱数量 EA\/BOX/);
   assert.match(html, /包装 \/ 托盘参数/);
-  assert.match(html, /打印 \/ 另存为 PDF/);
+  assert.match(html, /完成产品与包装数据后生成方案/);
+  assert.doesNotMatch(html, /打印 \/ 另存为 PDF/);
   assert.doesNotMatch(html, /Excel|Cost 主品|产品方案库|单品规划/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
@@ -37,15 +38,17 @@ test("keeps the v3 product boundary and saved-plan controls explicit", async () 
   const shell = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
   const planner = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
   const types = await readFile(new URL("../app/plannerTypes.ts", import.meta.url), "utf8");
-  assert.match(shell, /APP_VERSION = "3\.0\.0"/);
-  assert.match(shell, /ALGORITHM_VERSION = "MIX 2\.0"/);
+  assert.match(shell, /APP_VERSION = "3\.1\.0"/);
+  assert.match(shell, /ALGORITHM_VERSION = "MIX 2\.1"/);
   assert.match(shell, /PLAN_STORAGE_KEY = "megee-container-saved-plans-v3"/);
   assert.match(shell, /column-filter-button/);
   assert.match(shell, /HTML报告/);
-  assert.match(planner, /保存草稿/);
-  assert.match(planner, /确认保存/);
-  assert.match(planner, /HTML 报告/);
-  assert.match(planner, /Packing List PDF/);
+  assert.match(planner, /保存方案/);
+  assert.match(planner, /装柜报告 \/ PDF/);
+  assert.match(planner, /装箱单 PDF/);
+  assert.doesNotMatch(planner, /保存草稿/);
+  assert.doesNotMatch(planner, /确认保存/);
+  assert.doesNotMatch(planner, /HTML 报告/);
   assert.match(planner, /网页分享/);
   assert.match(types, /QuantityRule = "fixed" \| "adjustable" \| "kit"/);
   assert.doesNotMatch(shell, /Excel|Cost|产品主数据/);
@@ -63,10 +66,10 @@ test("keeps direct carton, pallet and procurement optimization auditable", async
   assert.match(planner, /固定/);
   assert.match(planner, /可调/);
   assert.match(planner, /齐套/);
-  assert.match(planner, /LONGITUDINAL SIDE VIEW/);
+  assert.match(planner, /LONGITUDINAL HEIGHT ENVELOPE/);
   assert.match(planner, /END VIEW/);
   assert.match(planner, /PALLET CARTON PATTERNS/);
-  assert.match(planner, /DATA & REPORT STRUCTURE PREFLIGHT: PASS/);
+  assert.match(planner, /DATA, QUANTITY & GEOMETRY: PASS/);
   assert.match(planner, /Packing List totals do not match the loading result/);
   assert.match(algorithm, /optimizeProcurementQuantities/);
   assert.match(algorithm, /validateMixedPlan\(result\)/);
@@ -74,12 +77,15 @@ test("keeps direct carton, pallet and procurement optimization auditable", async
   assert.match(algorithm, /result\.unplanned\.length === 0/);
 });
 
-test("uses a restrained text wordmark instead of a space-consuming logo asset", async () => {
+test("uses the compact official MEGEE COSPACK vector mark without a bitmap asset", async () => {
   const shell = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
   const planner = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
   assert.match(shell, /brand-wordmark/);
   assert.match(planner, /report-wordmark/);
-  assert.match(planner, /PACKAGING PRODUCTIVITY/);
+  assert.match(planner, /M9 25 15\.5 15 21 25l5\.5-10L33 25/);
+  assert.match(planner, /MEGEE<br \/>COSPACK/);
+  assert.match(planner, /: \[emptyRow\(1\)\]/);
+  assert.doesNotMatch(planner, /setRows\(\[emptyRow\(1\), emptyRow\(2\), emptyRow\(3\)\]\)/);
   assert.doesNotMatch(shell, /MegeeLogo|megee-logo\.jpg/);
 });
 
