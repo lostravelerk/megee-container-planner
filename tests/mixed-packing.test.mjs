@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   cartonsForDemand,
+  maximizeKitQuantity,
+  optimizeProcurementQuantities,
   planMixedContainerOptions,
   planMixedContainers,
   validateMixedPlan,
@@ -41,6 +43,138 @@ test("rounds demand up to complete cartons", () => {
   assert.equal(cartonsForDemand(1000, 500), 2);
   assert.equal(cartonsForDemand(0, 500), 0);
   assert.equal(cartonsForDemand(1000.5, 500), 0);
+});
+
+test("maximizes equal-EA component kits through the audited loading geometry", () => {
+  const result = maximizeKitQuantity([
+    {
+      ...item("404/24-PUMP", 1, 1000, { l: 500, w: 400, h: 260 }),
+      name: "404/24牙喷头",
+      packaging: "carton",
+    },
+    {
+      ...item("404/24-CAP", 1, 630, { l: 480, w: 380, h: 390 }),
+      name: "404/24牙外罩",
+      packaging: "carton",
+    },
+  ], {
+    l: 5898,
+    w: 2352,
+    h: 2393,
+    doorW: 2340,
+    doorH: 2292,
+  }, {
+    containerCount: 1,
+    cartonTolerance: 3,
+    cartonGap: 5,
+    skuGap: 30,
+    doorClearance: 80,
+    sideClearance: 30,
+    topClearance: 50,
+  });
+  assert.equal(result.kitQuantity, 144_000);
+  assert.equal(result.result.containers.length, 1);
+  assert.deepEqual(
+    result.result.items.map((entry) => entry.productQuantity),
+    [144_000, 144_000],
+  );
+  assert.deepEqual(
+    result.result.items.map((entry) => entry.requiredBoxes),
+    [144, 229],
+  );
+  assert.equal(result.result.items[1].productQuantity % result.result.items[1].eaPerBox, 360);
+  assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
+
+  const overflow = planMixedContainerOptions([
+    item("404/24-PUMP", 144_001, 1000, { l: 500, w: 400, h: 260 }),
+    item("404/24-CAP", 144_001, 630, { l: 480, w: 380, h: 390 }),
+  ], {
+    l: 5898,
+    w: 2352,
+    h: 2393,
+    doorW: 2340,
+    doorH: 2292,
+  }, {
+    maxContainers: 1,
+    cartonTolerance: 3,
+    cartonGap: 5,
+    skuGap: 30,
+    doorClearance: 80,
+    sideClearance: 30,
+    topClearance: 50,
+  })[0].result;
+  assert.ok(overflow.unplanned.length > 0, "the next kit quantity must not fit one 20GP");
+});
+
+test("optimizes fixed, adjustable and equal-EA kit quantities through physical loading", () => {
+  const container = { l: 1000, w: 500, h: 100, doorW: 500, doorH: 100 };
+  const result = optimizeProcurementQuantities([
+    {
+      ...item("FIXED", 100, 100, { l: 100, w: 100, h: 100 }),
+      quantityRule: "fixed",
+    },
+    {
+      ...item("ADJUST", 0, 100, { l: 100, w: 100, h: 100 }),
+      quantityRule: "adjustable",
+      minimumQuantity: 100,
+      targetQuantity: 500,
+      maximumQuantity: 1000,
+    },
+    {
+      ...item("KIT-A", 0, 100, { l: 100, w: 100, h: 100 }),
+      quantityRule: "kit",
+      kitCode: "K1",
+      minimumQuantity: 100,
+      maximumQuantity: 1000,
+    },
+    {
+      ...item("KIT-B", 0, 50, { l: 100, w: 100, h: 100 }),
+      quantityRule: "kit",
+      kitCode: "K1",
+      minimumQuantity: 100,
+      maximumQuantity: 1000,
+    },
+  ], container, {
+    containerCount: 1,
+    cartonTolerance: 0,
+    cartonGap: 0,
+    skuGap: 0,
+    doorClearance: 0,
+    sideClearance: 0,
+    topClearance: 0,
+  });
+  assert.equal(result.error, "");
+  assert.equal(result.quantities.FIXED, 100);
+  assert.ok(result.quantities.ADJUST >= 100 && result.quantities.ADJUST <= 1000);
+  assert.equal(result.quantities["KIT-A"], result.quantities["KIT-B"]);
+  assert.ok(result.quantities["KIT-A"] >= 100 && result.quantities["KIT-A"] <= 1000);
+  assert.equal(result.result.containers.length, 1);
+  assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
+  assert.ok(result.candidates.length > 0);
+});
+
+test("capacity optimizer allows non-carton-multiple quantities and protects their tail cartons", () => {
+  const result = optimizeProcurementQuantities([
+    {
+      ...item("TAIL", 0, 630, { l: 100, w: 100, h: 100 }),
+      quantityRule: "adjustable",
+      minimumQuantity: 631,
+      maximumQuantity: 631,
+    },
+  ], { l: 200, w: 100, h: 100, doorW: 100, doorH: 100 }, {
+    containerCount: 1,
+    cartonTolerance: 0,
+    cartonGap: 0,
+    skuGap: 0,
+    doorClearance: 0,
+    sideClearance: 0,
+    topClearance: 0,
+  });
+  assert.equal(result.error, "");
+  assert.equal(result.quantities.TAIL, 631);
+  assert.equal(result.result.items[0].requiredBoxes, 2);
+  assert.equal(result.result.items[0].productQuantity % 630, 1);
+  assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
 });
 
 test("calculates carton packaging CBM with a partial carton occupying one full outer-carton volume", () => {

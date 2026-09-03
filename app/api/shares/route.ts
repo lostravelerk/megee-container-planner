@@ -44,6 +44,8 @@ function sanitizePayload(input: unknown) {
     containerType: ["20GP", "40GP", "40HQ"].includes(text(source.containerType))
       ? text(source.containerType)
       : "40HQ",
+    planningMode: source.planningMode === "capacity" ? "capacity" : "order",
+    containerCount: Math.max(1, Math.min(20, Math.floor(finiteNumber(source.containerCount, 1, 20)))),
     rows: rows.map((entry, index) => {
       const row = entry && typeof entry === "object"
         ? entry as Record<string, unknown>
@@ -54,6 +56,13 @@ function sanitizePayload(input: unknown) {
         code: text(row.code, 80),
         name: text(row.name, 240),
         productQuantity: Math.floor(finiteNumber(row.productQuantity, 1)),
+        quantityRule: ["fixed", "adjustable", "kit"].includes(text(row.quantityRule))
+          ? text(row.quantityRule)
+          : "fixed",
+        kitCode: text(row.kitCode, 40) || "A",
+        minimumQuantity: Math.floor(finiteNumber(row.minimumQuantity, 0)),
+        targetQuantity: Math.floor(finiteNumber(row.targetQuantity, 0)),
+        maximumQuantity: Math.floor(finiteNumber(row.maximumQuantity, 0)),
         eaPerBox: Math.floor(finiteNumber(row.eaPerBox, 1)),
         l: finiteNumber(row.l, 10, 20_000),
         w: finiteNumber(row.w, 10, 20_000),

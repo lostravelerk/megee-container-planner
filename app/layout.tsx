@@ -27,7 +27,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
   const title = "浙江美集实业有限公司｜集装箱装柜规划";
-  const description = "浙江美集实业有限公司纸箱与托盘装柜规划工具，支持公差、安全空隙、多剖面可视化、产品方案库与正式客户报告。";
+  const description = "专业的纸箱、托盘与多SKU集装箱装柜生产力工具，支持订单规划、柜容反算、三视图、HTML报告及PDF。";
 
   return {
     metadataBase: new URL(origin),

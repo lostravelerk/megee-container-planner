@@ -1,5 +1,5 @@
-const CACHE_NAME = "megee-container-planner-v2.3.0";
-const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.svg", "/产品装柜规划导入模板.xlsx"];
+const CACHE_NAME = "megee-container-planner-v3.0.0";
+const APP_SHELL = ["/", "/manifest.webmanifest", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));

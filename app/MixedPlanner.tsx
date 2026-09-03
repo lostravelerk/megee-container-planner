@@ -3,64 +3,30 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   cartonsForDemand,
+  optimizeProcurementQuantities,
   planMixedContainerOptions,
   planMixedContainers,
   validateMixedPlan,
 } from "../lib/mixedPacking.js";
-import MegeeLogo from "./MegeeLogo";
+import type {
+  Dimensions,
+  Language,
+  PlannerConfig,
+  PlannerRow,
+  PlannerSnapshot,
+  PlanningMode,
+  SavedPlanRecord,
+} from "./plannerTypes";
 
-type Dimensions = {
-  l: number;
-  w: number;
-  h: number;
-  doorW?: number;
-  doorH?: number;
-};
-type Language = "zh" | "en";
-type PackagingMode = "carton" | "pallet";
-type MixedInputMode = "material" | "manual";
-type ProductOption = {
-  family: string;
-  code: string;
-  name: string;
-  eaPerBox: number | null;
-  carton: Dimensions | null;
-  productQuantity?: number | null;
-  packaging?: PackagingMode;
-  pallet?: Dimensions | null;
-};
-type MixedRow = {
-  id: string;
-  series: string;
-  code: string;
-  name: string;
-  productQuantity: number | "";
-  eaPerBox: number | "";
-  l: number | "";
-  w: number | "";
-  h: number | "";
-  packaging: PackagingMode;
-  palletL: number | "";
-  palletW: number | "";
-  palletH: number | "";
-  palletOverhang: number | "";
-};
+type MixedRow = PlannerRow;
 type SharedPlanPayload = {
   version: number;
   title?: string;
   containerType: string;
+  planningMode?: PlanningMode;
+  containerCount?: number;
   rows: Array<Partial<MixedRow>>;
-  config?: Partial<{
-    cartonTolerance: number;
-    cartonGap: number;
-    skuGap: number;
-    doorClearance: number;
-    sideClearance: number;
-    topClearance: number;
-    palletCartonGap: number;
-    palletGap: number;
-    palletTolerance: number;
-    edgeInset: number;
+  config?: Partial<PlannerConfig & {
     allowSkuInterlock: boolean;
     layoutStrategy: "maximum" | "entered-order" | "clear-zones";
   }>;
@@ -84,6 +50,11 @@ function emptyRow(index: number, id = `mix-initial-${index}`): MixedRow {
     code: "",
     name: "",
     productQuantity: "",
+    quantityRule: "fixed",
+    kitCode: "A",
+    minimumQuantity: "",
+    targetQuantity: "",
+    maximumQuantity: "",
     eaPerBox: "",
     l: 480,
     w: 380,
@@ -101,6 +72,15 @@ function formatNumber(value: number, digits = 0) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+function ReportBrand({ className = "" }: { className?: string }) {
+  return (
+    <div className={`report-wordmark ${className}`} aria-label="MEGEE COSPACK">
+      <b>MEGEE</b>
+      <span>PACKAGING PRODUCTIVITY</span>
+    </div>
+  );
 }
 
 function PalletPatternView({
@@ -645,14 +625,23 @@ function MixedPlanCanvas({
   sideClearance,
   doorClearance,
   language,
+  visiblePositionCount,
 }: {
   plan: ReturnType<typeof planMixedContainers>["containers"][number];
   container: Dimensions;
   sideClearance: number;
   doorClearance: number;
   language: Language;
+  visiblePositionCount?: number;
 }) {
   const isEnglish = language === "en";
+  const orderedPositions = [...plan.positions].sort(
+    (left, right) => left.x - right.x || left.y - right.y,
+  );
+  const visiblePositions = visiblePositionCount === undefined
+    ? orderedPositions
+    : orderedPositions.slice(0, Math.max(0, visiblePositionCount));
+  const animationComplete = visiblePositions.length === orderedPositions.length;
   return (
     <div className="mixed-plan-visual">
       <h4 className="mixed-view-title">
@@ -698,7 +687,7 @@ function MixedPlanCanvas({
               height={container.w}
               fill="#f1f4f6"
             />
-            {plan.positions.map((position, index) => {
+            {visiblePositions.map((position, index) => {
               const blockIndex = plan.blocks.findIndex(
                 (block) => block.item.id === position.skuId,
               );
@@ -710,6 +699,7 @@ function MixedPlanCanvas({
               return (
                 <g
                   key={`${position.skuId}-${position.x}-${position.y}-${index}`}
+                  className={visiblePositionCount === undefined ? undefined : "loading-sequence-item"}
                 >
                   <rect
                     x={position.x}
@@ -752,7 +742,7 @@ function MixedPlanCanvas({
                 </g>
               );
             })}
-            {plan.remainingLength > 150 ? (
+            {animationComplete && plan.remainingLength > 150 ? (
               <g>
                 <rect
                   x={plan.usedLength}
@@ -852,42 +842,65 @@ function MixedPlanCanvas({
 
 export default function MixedPlanner({
   language,
-  products,
   containers,
   appVersion,
+  algorithmVersion,
   buildVersion,
   initialShareId = "",
+  initialPlan = null,
+  initialReportOpen = false,
+  onSavePlan,
 }: {
   language: Language;
-  products: ProductOption[];
   containers: Record<string, Dimensions>;
   appVersion: string;
+  algorithmVersion: string;
   buildVersion: string;
   initialShareId?: string;
+  initialPlan?: SavedPlanRecord | null;
+  initialReportOpen?: boolean;
+  onSavePlan?: (
+    snapshot: PlannerSnapshot,
+    status: "draft" | "confirmed",
+  ) => SavedPlanRecord;
 }) {
   const isEnglish = language === "en";
-  const tr = (zh: string, en: string) => (isEnglish ? en : zh);
-  const [inputMode, setInputMode] = useState<MixedInputMode>("material");
-  const [rows, setRows] = useState<MixedRow[]>([
-    emptyRow(1),
-    emptyRow(2),
-    emptyRow(3),
-  ]);
-  const [containerType, setContainerType] = useState("40HQ");
-  const [cartonTolerance, setCartonTolerance] = useState(3);
-  const [cartonGap, setCartonGap] = useState(5);
-  const [skuGap, setSkuGap] = useState(30);
-  const [doorClearance, setDoorClearance] = useState(80);
-  const [sideClearance, setSideClearance] = useState(30);
-  const [topClearance, setTopClearance] = useState(50);
-  const [palletCartonGap, setPalletCartonGap] = useState(5);
-  const [palletGap, setPalletGap] = useState(20);
-  const [palletTolerance, setPalletTolerance] = useState(10);
-  const [edgeInset, setEdgeInset] = useState(10);
+  const tr = useCallback(
+    (zh: string, en: string) => (isEnglish ? en : zh),
+    [isEnglish],
+  );
+  const initialConfig = initialPlan?.config;
+  const [planTitle, setPlanTitle] = useState(initialPlan?.title || "");
+  const [rows, setRows] = useState<MixedRow[]>(() =>
+    initialPlan?.rows?.length
+      ? initialPlan.rows.map((row, index) => ({
+          ...emptyRow(index + 1, row.id || `saved-${index + 1}`),
+          ...row,
+        }))
+      : [emptyRow(1), emptyRow(2), emptyRow(3)],
+  );
+  const [planningMode, setPlanningMode] = useState<PlanningMode>(initialPlan?.planningMode || "order");
+  const [containerCount, setContainerCount] = useState(initialPlan?.containerCount || 1);
+  const [containerType, setContainerType] = useState(initialPlan?.containerType || "40HQ");
+  const [cartonTolerance, setCartonTolerance] = useState(initialConfig?.cartonTolerance ?? 3);
+  const [cartonGap, setCartonGap] = useState(initialConfig?.cartonGap ?? 5);
+  const [skuGap, setSkuGap] = useState(initialConfig?.skuGap ?? 30);
+  const [doorClearance, setDoorClearance] = useState(initialConfig?.doorClearance ?? 80);
+  const [sideClearance, setSideClearance] = useState(initialConfig?.sideClearance ?? 30);
+  const [topClearance, setTopClearance] = useState(initialConfig?.topClearance ?? 50);
+  const [palletCartonGap, setPalletCartonGap] = useState(initialConfig?.palletCartonGap ?? 5);
+  const [palletGap, setPalletGap] = useState(initialConfig?.palletGap ?? 20);
+  const [palletTolerance, setPalletTolerance] = useState(initialConfig?.palletTolerance ?? 10);
+  const [edgeInset, setEdgeInset] = useState(initialConfig?.edgeInset ?? 10);
   const allowSkuInterlock = true;
   const layoutStrategy = "maximum" as const;
   const [activeContainer, setActiveContainer] = useState(0);
+  const [playbackStep, setPlaybackStep] = useState(-1);
+  const [playbackRunning, setPlaybackRunning] = useState(false);
+  const [playbackPlanKey, setPlaybackPlanKey] = useState("");
   const [printError, setPrintError] = useState("");
+  const [htmlReportOpen, setHtmlReportOpen] = useState(initialReportOpen);
+  const [saveNotice, setSaveNotice] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [shareExpiryDays, setShareExpiryDays] = useState("0");
   const [shareAccessCode, setShareAccessCode] = useState("");
@@ -910,7 +923,9 @@ export default function MixedPlanner({
       packaging: row.packaging === "pallet" ? "pallet" as const : "carton" as const,
     }));
     setRows(sharedRows.length ? sharedRows : [emptyRow(1)]);
-    setInputMode("manual");
+    setPlanningMode(payload.planningMode === "capacity" ? "capacity" : "order");
+    setContainerCount(Math.max(1, Math.min(20, Number(payload.containerCount) || 1)));
+    setPlanTitle(payload.title || "");
     if (containers[payload.containerType]) setContainerType(payload.containerType);
     const config = payload.config ?? {};
     if (Number.isFinite(config.cartonTolerance)) setCartonTolerance(Number(config.cartonTolerance));
@@ -962,11 +977,10 @@ export default function MixedPlanner({
     return () => window.clearTimeout(task);
   }, [fetchSharedPlan, initialShareId]);
 
-  const validItems = useMemo(
+  const baseItems = useMemo(
     () =>
       rows.flatMap((row) => {
         const required = [
-          row.productQuantity,
           row.eaPerBox,
           row.l,
           row.w,
@@ -985,7 +999,11 @@ export default function MixedPlanner({
             series: row.series,
             code: row.code,
             name: row.name,
-            productQuantity: Number(row.productQuantity),
+            quantityRule: planningMode === "capacity" ? row.quantityRule : "fixed",
+            kitCode: row.kitCode,
+            minimumQuantity: row.minimumQuantity,
+            targetQuantity: row.targetQuantity,
+            maximumQuantity: row.maximumQuantity,
             eaPerBox: Number(row.eaPerBox),
             carton: { l: Number(row.l), w: Number(row.w), h: Number(row.h) },
             packaging: row.packaging,
@@ -1002,27 +1020,11 @@ export default function MixedPlanner({
           },
         ];
       }),
-    [rows],
+    [rows, planningMode],
   );
   const container = containers[containerType];
-  const layoutOptions = useMemo(
-    () =>
-      planMixedContainerOptions(validItems, container, {
-        cartonTolerance,
-        cartonGap,
-        skuGap,
-        doorClearance,
-        sideClearance,
-        topClearance,
-        palletCartonGap,
-        palletGap,
-        palletTolerance,
-        edgeInset,
-        allowSkuInterlock,
-      }),
-    [
-      validItems,
-      container,
+  const loadingConfig = useMemo(
+    () => ({
       cartonTolerance,
       cartonGap,
       skuGap,
@@ -1034,6 +1036,60 @@ export default function MixedPlanner({
       palletTolerance,
       edgeInset,
       allowSkuInterlock,
+    }),
+    [
+      cartonTolerance,
+      cartonGap,
+      skuGap,
+      doorClearance,
+      sideClearance,
+      topClearance,
+      palletCartonGap,
+      palletGap,
+      palletTolerance,
+      edgeInset,
+      allowSkuInterlock,
+    ],
+  );
+  const orderItems = useMemo(
+    () => baseItems.flatMap((item) => {
+      const row = rows.find((candidate) => candidate.id === item.id);
+      if (!row || row.productQuantity === "" || Number(row.productQuantity) <= 0)
+        return [];
+      return [{ ...item, productQuantity: Number(row.productQuantity) }];
+    }),
+    [baseItems, rows],
+  );
+  const capacityPlan = useMemo(
+    () => planningMode === "capacity"
+      ? optimizeProcurementQuantities(baseItems, container, {
+          ...loadingConfig,
+          containerCount: containerCount,
+        })
+      : null,
+    [planningMode, baseItems, container, loadingConfig, containerCount],
+  );
+  const validItems = useMemo(
+    () => planningMode === "capacity"
+      ? capacityPlan && !capacityPlan.error
+        ? baseItems.map((item) => ({
+            ...item,
+            productQuantity: capacityPlan.quantities[item.id] ?? 0,
+          })).filter((item) => item.productQuantity > 0)
+        : []
+      : orderItems,
+    [planningMode, capacityPlan, baseItems, orderItems],
+  );
+  const layoutOptions = useMemo(
+    () => planningMode === "capacity" && capacityPlan
+      ? [{ id: "maximum", recommended: true, candidateCount: capacityPlan.evaluations, result: capacityPlan.result }]
+      : planMixedContainerOptions(validItems, container, loadingConfig),
+    [
+      planningMode,
+      capacityPlan,
+      validItems,
+      container,
+      loadingConfig,
     ],
   );
   const result = useMemo(
@@ -1056,19 +1112,106 @@ export default function MixedPlanner({
           row.productQuantity !== "" ||
           row.eaPerBox !== "",
         );
-        return started && !validItems.some((item) => item.id === row.id);
+        const completeItems = planningMode === "capacity" ? baseItems : orderItems;
+        return started && !completeItems.some((item) => item.id === row.id);
       }),
-    [rows, validItems],
+    [rows, planningMode, baseItems, orderItems],
   );
   const preflight = useMemo(() => validateMixedPlan(result), [result]);
+  const capacityConstraintErrors = useMemo(() => {
+    if (planningMode !== "capacity" || !capacityPlan || capacityPlan.error)
+      return [];
+    const errors: string[] = [];
+    const kitGroups = new Map<string, Array<{ code: string; quantity: number }>>();
+    rows.forEach((row) => {
+      const quantity = Number(capacityPlan.quantities[row.id] || 0);
+      if (!quantity) return;
+      if (row.quantityRule === "fixed" && quantity !== Number(row.productQuantity))
+        errors.push(
+          tr(
+            `${row.code || row.name || row.id} 的固定数量被修改。`,
+            `The fixed quantity for ${row.code || row.name || row.id} was changed.`,
+          ),
+        );
+      const minimum = row.minimumQuantity === "" ? 1 : Number(row.minimumQuantity);
+      const maximum = row.maximumQuantity === "" ? Number.POSITIVE_INFINITY : Number(row.maximumQuantity);
+      if (row.quantityRule !== "fixed" && (quantity < minimum || quantity > maximum))
+        errors.push(
+          tr(
+            `${row.code || row.name || row.id} 的计算数量超出允许范围。`,
+            `The calculated quantity for ${row.code || row.name || row.id} is outside its allowed range.`,
+          ),
+        );
+      if (row.quantityRule === "kit") {
+        const key = row.kitCode.trim() || "A";
+        const members = kitGroups.get(key) || [];
+        members.push({ code: row.code || row.name || row.id, quantity });
+        kitGroups.set(key, members);
+      }
+    });
+    kitGroups.forEach((members, key) => {
+      if (new Set(members.map((member) => member.quantity)).size > 1)
+        errors.push(
+          tr(
+            `齐套组 ${key} 的组件数量不一致。`,
+            `Component quantities in kit group ${key} are not equal.`,
+          ),
+        );
+    });
+    if (result.containers.length > containerCount)
+      errors.push(
+        tr(
+          `实际需要 ${result.containers.length} 柜，超过指定的 ${containerCount} 柜。`,
+          `${result.containers.length} containers are required, exceeding the selected ${containerCount}.`,
+        ),
+      );
+    return errors;
+  }, [planningMode, capacityPlan, rows, result.containers.length, containerCount, tr]);
   const reportReady =
     validItems.length > 0 &&
     incompleteRows.length === 0 &&
-    preflight.ok;
+    preflight.ok &&
+    capacityConstraintErrors.length === 0 &&
+    (planningMode !== "capacity" || !capacityPlan?.error);
   const selectedPlan =
     result.containers[
       Math.min(activeContainer, Math.max(0, result.containers.length - 1))
     ];
+  const currentPlaybackPlanKey = `${containerType}-${selectedPlan?.index ?? 0}-${result.totalRequiredBoxes}`;
+  const playbackTotal = selectedPlan?.positions.length ?? 0;
+  const playbackIsCurrent = playbackPlanKey === currentPlaybackPlanKey;
+  const playbackVisible = !playbackIsCurrent || playbackStep < 0
+    ? playbackTotal
+    : Math.min(playbackStep, playbackTotal);
+  const playbackIsRunning = playbackIsCurrent && playbackRunning;
+  useEffect(() => {
+    if (!playbackIsRunning || playbackTotal <= 0) return undefined;
+    const timer = window.setInterval(() => {
+      setPlaybackStep((current) => {
+        const next = current < 0 ? 1 : current + 1;
+        if (next >= playbackTotal) {
+          window.clearInterval(timer);
+          setPlaybackRunning(false);
+          return playbackTotal;
+        }
+        return next;
+      });
+    }, 180);
+    return () => window.clearInterval(timer);
+  }, [playbackIsRunning, playbackTotal]);
+  const playbackPositions = selectedPlan
+    ? [...selectedPlan.positions].sort(
+        (left, right) => left.x - right.x || left.y - right.y,
+      )
+    : [];
+  const activePlaybackPosition = playbackVisible > 0
+    ? playbackPositions[playbackVisible - 1]
+    : undefined;
+  const activePlaybackBlock = activePlaybackPosition
+    ? selectedPlan?.blocks.find(
+        (block) => block.item.id === activePlaybackPosition.skuId,
+      )
+    : undefined;
   const securingRequired = result.containers.some(
     (plan) => plan.requiresSecuring,
   );
@@ -1078,17 +1221,8 @@ export default function MixedPlanner({
     day: "2-digit",
     timeZone: "Asia/Shanghai",
   }).format(new Date());
-  const reportNumber = `MIX-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`;
+  const reportNumber = `${planningMode === "capacity" ? "CAP" : "ORD"}-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`;
   const packingListNumber = `PL-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`;
-  const seriesOptions = useMemo(
-    () =>
-      [
-        ...new Set(products.map((product) => product.family).filter(Boolean)),
-      ].sort((left, right) =>
-        left.localeCompare(right, "zh-CN", { numeric: true }),
-      ),
-    [products],
-  );
   const updateRow = (id: string, patch: Partial<MixedRow>) => {
     setRows((current) =>
       current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
@@ -1117,6 +1251,8 @@ export default function MixedPlanner({
             version: 1,
             title: `MIX-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`,
             containerType,
+            planningMode,
+            containerCount,
             rows: rows.filter((row) => validIds.has(row.id)),
             config: {
               cartonTolerance,
@@ -1161,13 +1297,9 @@ export default function MixedPlanner({
     if (!shareUrl) return;
     await navigator.clipboard?.writeText(shareUrl);
   };
-  const runPrintMode = async (
+  const runPrintMode = (
     mode: "print-loading-report" | "print-packing-list",
   ) => {
-    await document.fonts?.ready;
-    await new Promise<void>((resolve) =>
-      window.requestAnimationFrame(() => resolve()),
-    );
     const cleanup = () => {
       document.body.classList.remove("print-loading-report", "print-packing-list");
     };
@@ -1175,7 +1307,7 @@ export default function MixedPlanner({
     document.body.classList.add(mode);
     window.addEventListener("afterprint", cleanup, { once: true });
     window.print();
-    window.setTimeout(cleanup, 2000);
+    window.setTimeout(cleanup, 60_000);
   };
   const printReport = async () => {
     if (!reportReady) {
@@ -1184,15 +1316,13 @@ export default function MixedPlanner({
             `${incompleteRows.length} 行已开始但字段未完整。`,
             `${incompleteRows.length} started row(s) are incomplete.`,
           )
+        : capacityConstraintErrors[0]
+          ? capacityConstraintErrors[0]
         : preflight.errors[0] ||
           tr("请先完成有效产品数据。", "Complete valid product data first.");
       setPrintError(detail);
       return;
     }
-    await document.fonts?.ready;
-    await new Promise<void>((resolve) =>
-      window.requestAnimationFrame(() => resolve()),
-    );
     const report = document.querySelector<HTMLElement>(".mixed-print-report");
     const identityRows =
       report?.querySelectorAll(".mixed-product-identity-table tbody tr")
@@ -1223,6 +1353,16 @@ export default function MixedPlanner({
         tr(
           "产品表行数与有效 SKU 数不一致。",
           "Product-table row counts do not match valid SKUs.",
+        ),
+      );
+    if (
+      planningMode === "capacity" &&
+      (result.containers.length > containerCount || capacityPlan?.error)
+    )
+      structureErrors.push(
+        tr(
+          "采购数量组合或指定柜数与报告结果不一致。",
+          "The procurement mix or selected container count does not match the report.",
         ),
       );
     if (palletPatternCount !== expectedPalletPatterns)
@@ -1275,7 +1415,7 @@ export default function MixedPlanner({
       return;
     }
     setPrintError("");
-    await runPrintMode("print-loading-report");
+    runPrintMode("print-loading-report");
   };
   const printPackingList = async () => {
     if (!reportReady) {
@@ -1284,15 +1424,13 @@ export default function MixedPlanner({
             `${incompleteRows.length} 行已开始但字段未完整。`,
             `${incompleteRows.length} started row(s) are incomplete.`,
           )
+        : capacityConstraintErrors[0]
+          ? capacityConstraintErrors[0]
         : preflight.errors[0] ||
           tr("请先完成有效产品数据。", "Complete valid product data first.");
       setPrintError(detail);
       return;
     }
-    await document.fonts?.ready;
-    await new Promise<void>((resolve) =>
-      window.requestAnimationFrame(() => resolve()),
-    );
     const report = document.querySelector<HTMLElement>(".packing-list-print");
     const productRows =
       report?.querySelectorAll(".packing-list-products tbody tr").length ?? 0;
@@ -1313,6 +1451,10 @@ export default function MixedPlanner({
           "Packing List 产品行数与有效 SKU 数不一致。",
           "Packing List product rows do not match valid SKUs.",
         ),
+      );
+    if (planningMode === "capacity" && capacityPlan?.error)
+      structureErrors.push(
+        tr("Packing List 采购组合未通过校验。", "The Packing List procurement mix failed validation."),
       );
     if (allocationRows !== expectedAllocationRows)
       structureErrors.push(
@@ -1347,62 +1489,86 @@ export default function MixedPlanner({
       return;
     }
     setPrintError("");
-    await runPrintMode("print-packing-list");
+    runPrintMode("print-packing-list");
   };
-  const selectSeries = (id: string, series: string) =>
-    updateRow(id, {
-      series,
-      code: "",
-      name: "",
-      productQuantity: "",
-      eaPerBox: "",
-      l: 480,
-      w: 380,
-      h: 350,
-      packaging: "carton",
-      palletL: 1000,
-      palletW: 1200,
-      palletH: 150,
-      palletOverhang: 0,
+  const kitGroups = new Map<string, number[]>();
+  if (planningMode === "capacity") {
+    rows.filter((row) => row.quantityRule === "kit").forEach((row) => {
+      const key = row.kitCode.trim() || "A";
+      const values = kitGroups.get(key) || [];
+      values.push(Number(capacityPlan?.quantities[row.id] || 0));
+      kitGroups.set(key, values);
     });
-  const selectProduct = (id: string, code: string) => {
-    const product = products.find((item) => item.code === code);
-    if (!product) {
-      updateRow(id, { code });
+  }
+  const completeKits = kitGroups.size === 1
+    ? [...kitGroups.values()][0]?.[0] || null
+    : null;
+  const buildSnapshot = (): PlannerSnapshot => ({
+    schemaVersion: 3,
+    title: planTitle.trim() || `${containerType} · ${validItems.map((item) => item.code || item.name).filter(Boolean).slice(0, 3).join(" + ") || tr("装柜方案", "Loading plan")}`,
+    containerType,
+    planningMode,
+    containerCount,
+    rows: rows.map((row) => ({ ...row })),
+    config: {
+      cartonTolerance,
+      cartonGap,
+      skuGap,
+      doorClearance,
+      sideClearance,
+      topClearance,
+      palletCartonGap,
+      palletGap,
+      palletTolerance,
+      edgeInset,
+    },
+    summary: {
+      skuCount: validItems.length,
+      productQuantity: result.totalDemandEa,
+      completeKits,
+      cartons: result.totalRequiredBoxes,
+      pallets: result.totalRequiredPallets,
+      cbm: result.totalRequiredVolumeCbm,
+      containers: result.containers.length,
+      utilization: containerCount > 0
+        ? result.totalRequiredVolumeCbm / (container.l * container.w * container.h / 1_000_000_000 * containerCount) * 100
+        : 0,
+    },
+  });
+  const saveCurrentPlan = (status: "draft" | "confirmed") => {
+    if (!onSavePlan) return;
+    if (!reportReady && status === "confirmed") {
+      setSaveNotice(tr("方案未通过自检，不能确认为正式方案。", "The plan has not passed preflight and cannot be confirmed."));
       return;
     }
-    updateRow(id, {
-      series: product.family,
-      code: product.code,
-      name: product.name,
-      eaPerBox: product.eaPerBox ?? "",
-      l: product.carton?.l ?? 480,
-      w: product.carton?.w ?? 380,
-      h: product.carton?.h ?? 350,
-      packaging: "carton",
-      palletL: product.pallet?.l ?? 1000,
-      palletW: product.pallet?.w ?? 1200,
-      palletH: product.pallet?.h ?? 150,
-      palletOverhang: 0,
-    });
+    const saved = onSavePlan(buildSnapshot(), status);
+    setPlanTitle(saved.title);
+    setSaveNotice(
+      status === "confirmed"
+        ? tr(`已确认并保存 ${saved.id} · R${saved.revision}`, `Confirmed and saved ${saved.id} · R${saved.revision}`)
+        : tr(`草稿已保存 ${saved.id} · R${saved.revision}`, `Draft saved ${saved.id} · R${saved.revision}`),
+    );
   };
   return (
     <>
-      <section className="mixed-workspace" aria-labelledby="mixed-title">
+      <section className={`mixed-workspace${htmlReportOpen ? " html-report-active-workspace" : ""}`} aria-labelledby="mixed-title">
         <div className="mixed-toolbar panel">
-          <div>
-            <p className="section-kicker">MIXED LOAD PLANNING</p>
-            <h2 id="mixed-title">
-              {tr("多产品拼柜规划", "Mixed Product Loading")}
-            </h2>
-            <p>
-              {tr(
-                "清单录入 · 自动旋转优化 · 自动分柜",
-                "Grid entry · automatic rotation optimization · automatic allocation",
-              )}
-            </p>
+          <div className="mixed-title-block">
+            <p className="section-kicker">LOADING PLAN</p>
+            <h2 id="mixed-title">{tr("集装箱装柜规划", "Container Loading Plan")}</h2>
+            <label>
+              <span>{tr("方案名称", "Plan name")}</span>
+              <input
+                value={planTitle}
+                placeholder={tr("例如：客户 / 订单号 / 日期", "Customer / order / date")}
+                onChange={(event) => setPlanTitle(event.target.value)}
+              />
+            </label>
           </div>
           <div className="mixed-primary-actions">
+            <button onClick={() => saveCurrentPlan("draft")}>{tr("保存草稿", "Save draft")}</button>
+            <button disabled={!reportReady} onClick={() => saveCurrentPlan("confirmed")}>{tr("确认保存", "Confirm")}</button>
+            <button disabled={!reportReady} onClick={() => setHtmlReportOpen(true)}>{tr("HTML 报告", "HTML report")}</button>
             <button
               disabled={!reportReady}
               onClick={() => {
@@ -1413,20 +1579,19 @@ export default function MixedPlanner({
               {tr("网页分享", "Share Web Plan")}
             </button>
             <button
-              disabled={!reportReady}
               onClick={printPackingList}
             >
               {tr("Packing List PDF", "Packing List PDF")}
             </button>
             <button
               className="primary"
-              disabled={!reportReady}
               onClick={printReport}
             >
               {tr("打印 / 另存为 PDF", "Print / Save as PDF")} ↗
             </button>
           </div>
         </div>
+        {saveNotice ? <div className="save-notice" role="status">{saveNotice}</div> : null}
         {printError ? (
           <div className="mixed-error print-preflight-error">
             <b>{tr("报告自检未通过", "REPORT PREFLIGHT FAILED")}</b>
@@ -1549,6 +1714,22 @@ export default function MixedPlanner({
         ) : null}
 
         <div className="mixed-config panel">
+          <div className="mixed-planning-goal" role="group" aria-label={tr("计算目标", "Planning objective")}>
+            <button
+              className={planningMode === "order" ? "active" : ""}
+              onClick={() => setPlanningMode("order")}
+            >
+              <b>{tr("按订单量", "ORDER QUANTITY")}</b>
+              <span>{tr("按各 SKU 输入数量装柜", "Load entered SKU quantities")}</span>
+            </button>
+            <button
+              className={planningMode === "capacity" ? "active" : ""}
+              onClick={() => setPlanningMode("capacity")}
+            >
+              <b>{tr("按柜容反算", "PLAN TO CAPACITY")}</b>
+              <span>{tr("固定 / 可调 / 齐套数量优化", "Fixed / adjustable / kit quantities")}</span>
+            </button>
+          </div>
           <label className="mixed-container-select">
             {tr("柜型", "Container")}
             <select
@@ -1563,10 +1744,25 @@ export default function MixedPlanner({
               ))}
             </select>
           </label>
+          <label className="mixed-kit-count">
+            {tr("柜数", "Containers")}
+            <select
+              value={containerCount}
+              disabled={planningMode !== "capacity"}
+              onChange={(event) => {
+                setContainerCount(Math.max(1, Math.min(20, Number(event.target.value) || 1)));
+                setActiveContainer(0);
+              }}
+            >
+              {Array.from({ length: 20 }, (_, index) => index + 1).map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
           <div className="mixed-config-status">
             <span>{tr("高度向上", "Upright only")}</span>
             <span>{tr("底面允许 90°", "Base rotation 90°")}</span>
-            <span>{tr("自动最紧凑排布", "Automatic compact layout")}</span>
+            <span>{tr("几何自检最优排布", "Geometry-audited optimum")}</span>
             <span>{tr("尾箱置顶禁压", "Partial carton protected")}</span>
           </div>
           <details className="mixed-advanced-config">
@@ -1717,56 +1913,6 @@ export default function MixedPlanner({
               </button>
             </div>
           </div>
-          <div
-            className="mixed-input-mode"
-            role="group"
-            aria-label={tr("拼柜 SKU 输入方式", "Mixed-load SKU input method")}
-          >
-            <button
-              className={inputMode === "material" ? "active" : ""}
-              onClick={() => {
-                if (inputMode !== "material") {
-                  setInputMode("material");
-                  setRows([emptyRow(1), emptyRow(2), emptyRow(3)]);
-                  setActiveContainer(0);
-                }
-              }}
-            >
-              <b>{tr("选择美集物料", "Select Megee Material")}</b>
-              <span>
-                {tr(
-                  "系列 → 产品代码 · 品名，包装参数自动锁定",
-                  "Series → code · name; packaging data locked",
-                )}
-              </span>
-            </button>
-            <button
-              className={inputMode === "manual" ? "active" : ""}
-              onClick={() => {
-                if (inputMode !== "manual") {
-                  setInputMode("manual");
-                  setRows([emptyRow(1), emptyRow(2), emptyRow(3)]);
-                  setActiveContainer(0);
-                }
-              }}
-            >
-              <b>{tr("手工添加拼柜 SKU", "Add SKU Manually")}</b>
-              <span>
-                {tr(
-                  "全部产品与包装参数由操作人员录入",
-                  "Enter all product and packaging data",
-                )}
-              </span>
-            </button>
-          </div>
-          {inputMode === "material" && products.length === 0 ? (
-            <div className="mixed-material-empty">
-              {tr(
-                "尚未载入美集物料。请先在“产品方案库”导入标准 Excel，或切换为手工添加。",
-                "No Megee materials are loaded. Import the standard Excel file in Plan Library or switch to manual entry.",
-              )}
-            </div>
-          ) : null}
           <div className="mixed-grid-scroll">
             <table className="mixed-entry-grid">
               <thead>
@@ -1774,11 +1920,10 @@ export default function MixedPlanner({
                   <th>#</th>
                   <th>{tr("系列", "Series")}</th>
                   <th>{tr("产品代码 / 品名规格", "Code / Product")}</th>
-                  <th>{tr("产品数量", "Product quantity")}</th>
+                  <th>{planningMode === "capacity" ? tr("数量 / 规则", "Quantity / Rule") : tr("产品数量", "Product quantity")}</th>
                   <th>{tr("装箱数量 EA/BOX", "PACK QTY EA/BOX")}</th>
                   <th>{tr("外箱 L×W×H", "Carton L×W×H")}</th>
-                  <th>{tr("包装", "Pack")}</th>
-                  <th>{tr("托盘 L×W×H / 外伸", "Pallet L×W×H / OH")}</th>
+                  <th>{tr("包装 / 托盘参数", "Pack / Pallet")}</th>
                   <th>{tr("总箱数", "Total cartons")}</th>
                   <th>{tr("CBM 材积", "Packaging CBM")}</th>
                   <th>{tr("尾箱数量", "Last-carton quantity")}</th>
@@ -1787,124 +1932,109 @@ export default function MixedPlanner({
               </thead>
               <tbody>
                 {rows.map((row, index) => {
+                  const effectiveQuantity = planningMode === "capacity"
+                    ? capacityPlan?.quantities[row.id] ?? 0
+                    : row.productQuantity === "" ? 0 : Number(row.productQuantity);
                   const boxes =
-                    row.productQuantity === "" || row.eaPerBox === ""
+                    effectiveQuantity <= 0 || row.eaPerBox === ""
                       ? 0
                       : cartonsForDemand(
-                          Number(row.productQuantity),
+                          effectiveQuantity,
                           Number(row.eaPerBox),
                         );
                   const remainder =
-                    row.productQuantity === "" || row.eaPerBox === ""
+                    effectiveQuantity <= 0 || row.eaPerBox === ""
                       ? 0
-                      : Number(row.productQuantity) % Number(row.eaPerBox);
+                      : effectiveQuantity % Number(row.eaPerBox);
                   const packagingCbm =
                     calculatedItems.get(row.id)?.requiredVolumeCbm ?? 0;
-                  const availableProducts = products.filter(
-                    (product) => product.family === row.series,
-                  );
                   return (
                     <tr key={row.id} className={boxes ? "valid-row" : ""}>
                       <td className="row-index" data-label="#">{index + 1}</td>
                       <td data-label={tr("系列", "Series")}>
-                        {inputMode === "material" ? (
-                          <select
-                            aria-label={tr("选择系列", "Select series")}
-                            value={row.series}
-                            onChange={(event) =>
-                              selectSeries(row.id, event.target.value)
-                            }
-                          >
-                            <option value="">
-                              {tr("选择系列", "Select series")}
-                            </option>
-                            {seriesOptions.map((series) => (
-                              <option key={series} value={series}>
-                                {series}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <input
-                            aria-label={tr("系列", "Series")}
-                            value={row.series}
-                            onChange={(event) =>
-                              updateRow(row.id, { series: event.target.value })
-                            }
-                          />
-                        )}
+                        <input
+                          aria-label={tr("系列", "Series")}
+                          value={row.series}
+                          onChange={(event) => updateRow(row.id, { series: event.target.value })}
+                        />
                       </td>
                       <td className="mixed-product-cell" data-label={tr("产品代码 / 品名规格", "Code / Product")}>
-                        {inputMode === "material" ? (
-                          <>
-                            <select
-                              aria-label={tr(
-                                "选择产品代码并核对品名",
-                                "Select product code and verify name",
-                              )}
-                              value={row.code}
-                              disabled={!row.series}
-                              onChange={(event) =>
-                                selectProduct(row.id, event.target.value)
-                              }
-                            >
-                              <option value="">
-                                {tr("选择代码 · 品名", "Select code · name")}
-                              </option>
-                              {availableProducts.map((product) => (
-                                <option key={product.code} value={product.code}>
-                                  {product.code} · {product.name}
-                                </option>
-                              ))}
-                            </select>
-                            <span className="product-name-confirm" title={row.name}>{row.name || "—"}</span>
-                          </>
-                        ) : (
-                          <>
-                            <input
-                              aria-label={tr("产品代码", "Product code")}
-                              placeholder={tr("代码", "Code")}
-                              value={row.code}
-                              onChange={(event) =>
-                                updateRow(row.id, { code: event.target.value })
-                              }
-                            />
-                            <input
-                              aria-label={tr("品名规格", "Product / specification")}
-                              placeholder={tr("品名规格", "Product")}
-                              value={row.name}
-                              onChange={(event) =>
-                                updateRow(row.id, { name: event.target.value })
-                              }
-                            />
-                          </>
-                        )}
+                        <input
+                          aria-label={tr("产品代码", "Product code")}
+                          placeholder={tr("代码", "Code")}
+                          value={row.code}
+                          onChange={(event) => updateRow(row.id, { code: event.target.value })}
+                        />
+                        <input
+                          aria-label={tr("品名规格", "Product / specification")}
+                          placeholder={tr("品名规格", "Product")}
+                          value={row.name}
+                          onChange={(event) => updateRow(row.id, { name: event.target.value })}
+                        />
                       </td>
-                      <td data-label={tr("产品数量", "Product quantity")}>
+                      <td className="quantity-rule-cell" data-label={tr("数量 / 规则", "Quantity / Rule")}>
                         <input
                           aria-label={tr("产品数量", "Product quantity")}
                           type="number"
                           min="1"
-                          value={row.productQuantity}
+                          readOnly={planningMode === "capacity" && row.quantityRule !== "fixed"}
+                          value={planningMode === "capacity" && row.quantityRule !== "fixed" ? effectiveQuantity || "" : row.productQuantity}
                           onChange={(event) =>
-                            updateRow(row.id, {
-                              productQuantity:
-                                event.target.value === ""
-                                  ? ""
-                                  : Math.max(
-                                      1,
-                                      Math.floor(Number(event.target.value)),
-                                    ),
-                            })
+                            planningMode === "order" || row.quantityRule === "fixed"
+                              ? updateRow(row.id, {
+                                  productQuantity:
+                                    event.target.value === ""
+                                      ? ""
+                                      : Math.max(
+                                          1,
+                                          Math.floor(Number(event.target.value)),
+                                        ),
+                                })
+                              : undefined
                           }
                         />
+                        {planningMode === "capacity" ? (
+                          <div className="quantity-rule-controls">
+                            <select
+                              aria-label={tr("数量规则", "Quantity rule")}
+                              value={row.quantityRule}
+                              onChange={(event) => updateRow(row.id, { quantityRule: event.target.value as MixedRow["quantityRule"] })}
+                            >
+                              <option value="fixed">{tr("固定", "Fixed")}</option>
+                              <option value="adjustable">{tr("可调", "Adjustable")}</option>
+                              <option value="kit">{tr("齐套", "Kit")}</option>
+                            </select>
+                            {row.quantityRule === "kit" ? (
+                              <input
+                                aria-label={tr("齐套组", "Kit group")}
+                                title={tr("相同组代码的 SKU 最终数量相同", "SKUs with the same group code receive equal EA")}
+                                value={row.kitCode}
+                                onChange={(event) => updateRow(row.id, { kitCode: event.target.value })}
+                              />
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {planningMode === "capacity" && row.quantityRule !== "fixed" ? (
+                          <div className="quantity-range" aria-label={tr("最小目标最大数量", "Minimum target maximum quantity")}>
+                            {(["minimumQuantity", "targetQuantity", "maximumQuantity"] as const).map((key, rangeIndex) => (
+                              <input
+                                key={key}
+                                type="number"
+                                min="0"
+                                aria-label={[tr("最小数量", "Minimum quantity"), tr("目标数量", "Target quantity"), tr("最大数量", "Maximum quantity")][rangeIndex]}
+                                placeholder={[tr("最小", "Min"), tr("目标", "Target"), tr("最大", "Max")][rangeIndex]}
+                                value={row[key]}
+                                onChange={(event) => updateRow(row.id, { [key]: event.target.value === "" ? "" : Math.max(0, Math.floor(Number(event.target.value))) })}
+                              />
+                            ))}
+                          </div>
+                        ) : null}
                       </td>
                       <td data-label={tr("装箱数量 EA/BOX", "Pack quantity EA/BOX")}>
                         <input
                           aria-label="EA/BOX"
                           type="number"
                           min="1"
-                          disabled={inputMode === "material"}
                           value={row.eaPerBox}
                           onChange={(event) =>
                             updateRow(row.id, {
@@ -1922,11 +2052,15 @@ export default function MixedPlanner({
                                 aria-label={`${tr("外箱", "Carton")} ${key.toUpperCase()} mm`}
                                 type="number"
                                 min="10"
-                                disabled={inputMode === "material"}
                                 value={row[key]}
                                 onChange={(event) =>
                                   updateRow(row.id, {
-                                    [key]: event.target.value === "" ? "" : Math.max(10, Number(event.target.value)),
+                                    [key]: event.target.value === "" ? "" : Number(event.target.value),
+                                  })
+                                }
+                                onBlur={(event) =>
+                                  updateRow(row.id, {
+                                    [key]: Math.max(10, Number(event.currentTarget.value) || 10),
                                   })
                                 }
                               />
@@ -1934,11 +2068,10 @@ export default function MixedPlanner({
                           ))}
                         </div>
                       </td>
-                      <td data-label={tr("包装方式", "Packaging")}>
+                      <td className="packaging-cell" data-label={tr("包装 / 托盘参数", "Pack / Pallet")}>
                         <select
                           aria-label={tr("包装方式", "Packaging method")}
                           value={row.packaging}
-                          disabled={inputMode === "material" && !row.code}
                           onChange={(event) =>
                             updateRow(row.id, {
                               packaging: event.target.value === "pallet" ? "pallet" : "carton",
@@ -1948,8 +2081,6 @@ export default function MixedPlanner({
                           <option value="carton">{tr("纸箱", "Carton")}</option>
                           <option value="pallet">{tr("托盘", "Pallet")}</option>
                         </select>
-                      </td>
-                      <td data-label={tr("托盘 L×W×H / 外伸 (mm)", "Pallet L×W×H / overhang (mm)")}>
                         {row.packaging === "pallet" ? (
                           <div className="inline-dimensions pallet-inline-dimensions" aria-label={tr("托盘尺寸及外伸", "Pallet dimensions and overhang")}>
                             {(["palletL", "palletW", "palletH"] as const).map((key, dimensionIndex) => (
@@ -1962,7 +2093,12 @@ export default function MixedPlanner({
                                   value={row[key]}
                                   onChange={(event) =>
                                     updateRow(row.id, {
-                                      [key]: event.target.value === "" ? "" : Math.max(10, Number(event.target.value)),
+                                      [key]: event.target.value === "" ? "" : Number(event.target.value),
+                                    })
+                                  }
+                                  onBlur={(event) =>
+                                    updateRow(row.id, {
+                                      [key]: Math.max(10, Number(event.currentTarget.value) || 10),
                                     })
                                   }
                                 />
@@ -2030,11 +2166,36 @@ export default function MixedPlanner({
             </table>
           </div>
           <p className="mixed-grid-note">
-            {tr(
-              "系统按订单产品数量向上计算箱数；产品数量无需是 EA/BOX 的倍数，尾箱按完整箱位、置顶固定、禁止受压。",
-              "Cartons are rounded up from ordered product quantities. Quantity need not be a multiple of EA/BOX; a partial carton reserves one full top position without load above.",
-            )}
+            {planningMode === "capacity"
+              ? tr(
+                  `以 ${containerCount} × ${containerType} 反算采购组合：固定数量不变、可调数量在范围内优化、同组齐套 SKU 保持相同 EA。所有候选均通过真实装柜与几何自检。`,
+                  `Procurement is optimized against ${containerCount} × ${containerType}: fixed quantities remain exact, adjustable rows stay in range, and kit SKUs share equal EA. Every candidate is physically planned and audited.`,
+                )
+              : tr(
+                  "系统按订单产品数量向上计算箱数；产品数量无需是 EA/BOX 的倍数，尾箱按完整箱位、置顶固定、禁止受压。",
+                  "Cartons are rounded up from ordered product quantities. Quantity need not be a multiple of EA/BOX; a partial carton reserves one full top position without load above.",
+                )}
           </p>
+          {planningMode === "capacity" && baseItems.length ? (
+            <div className={`kit-capacity-banner${capacityPlan && !capacityPlan.error ? " ready" : " error"}`}>
+              <div>
+                <span>{completeKits !== null ? tr("最大齐套数量", "MAXIMUM COMPLETE SETS") : tr("最优采购组合", "OPTIMIZED PROCUREMENT MIX")}</span>
+                <strong>{capacityPlan && !capacityPlan.error ? formatNumber(completeKits ?? result.totalDemandEa) : "—"}</strong>
+                <b>{completeKits !== null ? "SET" : "EA"}</b>
+              </div>
+              <p>
+                {capacityPlan && !capacityPlan.error
+                  ? tr(
+                      `${validItems.length} 个 SKU、组件合计 ${formatNumber(result.totalDemandEa)} EA、${formatNumber(result.totalRequiredBoxes)} 箱；已评估 ${capacityPlan.evaluations} 个实际排布候选并通过完整几何复核。`,
+                      `${validItems.length} SKUs, ${formatNumber(result.totalDemandEa)} component EA and ${formatNumber(result.totalRequiredBoxes)} cartons; ${capacityPlan.evaluations} physical candidates evaluated and the selected mix passed the full geometry audit.`,
+                    )
+                  : tr(
+                      `当前约束没有可执行方案：${capacityPlan?.error || "请检查数据"}`,
+                      `No executable mix under the current constraints: ${capacityPlan?.error || "check the data"}`,
+                    )}
+              </p>
+            </div>
+          ) : null}
           {rows.some((row) => row.packaging === "pallet") ? (
             <div className="mixed-pallet-policy">
               <b>{tr("托盘边界规则", "PALLET BOUNDARY RULE")}</b>
@@ -2066,9 +2227,9 @@ export default function MixedPlanner({
             <small>SKU</small>
           </article>
           <article>
-            <span>{tr("产品数量", "Product quantity")}</span>
-            <strong>{formatNumber(result.totalDemandEa)}</strong>
-            <small>EA</small>
+            <span>{completeKits !== null ? tr("齐套数量", "Complete sets") : tr("产品数量", "Product quantity")}</span>
+            <strong>{formatNumber(completeKits ?? result.totalDemandEa)}</strong>
+            <small>{completeKits !== null ? `SET · ${formatNumber(result.totalDemandEa)} EA` : "EA"}</small>
           </article>
           <article>
             <span>{tr("总箱数", "Total cartons")}</span>
@@ -2087,7 +2248,7 @@ export default function MixedPlanner({
           <article>
             <span>{tr("数量满足率", "Demand fulfilment")}</span>
             <strong>{formatNumber(result.demandFulfillment, 1)}%</strong>
-            <small>{tr("按输入产品数量", "of entered quantity")}</small>
+            <small>{planningMode === "capacity" ? tr("齐套与几何约束", "kit and geometry constraints") : tr("按输入产品数量", "of entered quantity")}</small>
           </article>
           <article className="primary">
             <span>{tr("需要集装箱", "Containers required")}</span>
@@ -2183,12 +2344,54 @@ export default function MixedPlanner({
                 </span>
               </div>
             ) : null}
+            <div className="loading-playback" aria-label={tr("装柜流水线演示", "Loading sequence playback")}>
+              <button
+                className="primary"
+                onClick={() => {
+                  if (playbackIsRunning) {
+                    setPlaybackRunning(false);
+                    return;
+                  }
+                  setPlaybackPlanKey(currentPlaybackPlanKey);
+                  if (playbackStep < 0 || playbackStep >= playbackTotal)
+                    setPlaybackStep(0);
+                  setPlaybackRunning(true);
+                }}
+              >
+                {playbackIsRunning
+                  ? tr("暂停", "Pause")
+                  : playbackStep >= playbackTotal && playbackStep >= 0
+                    ? tr("重新演示", "Replay")
+                    : tr("播放装柜演示", "Play loading sequence")}
+              </button>
+              <input
+                aria-label={tr("装柜演示进度", "Loading playback progress")}
+                type="range"
+                min="0"
+                max={Math.max(1, playbackTotal)}
+                value={playbackVisible}
+                onChange={(event) => {
+                  setPlaybackRunning(false);
+                  setPlaybackPlanKey(currentPlaybackPlanKey);
+                  setPlaybackStep(Number(event.target.value));
+                }}
+              />
+              <div>
+                <b>{playbackVisible}/{playbackTotal}</b>
+                <span>
+                  {activePlaybackBlock
+                    ? `${activePlaybackBlock.item.code || activePlaybackBlock.item.name} · ${activePlaybackPosition?.packaging === "pallet" ? `${activePlaybackPosition.stackBoxes} PLT · ${activePlaybackBlock.cartonsPerPallet} BOX/PLT` : `${activePlaybackPosition?.stackBoxes ?? 0} BOX ${tr("向上堆叠", "stacked upright")}`}`
+                    : tr("从箱头开始，按顺序向箱门装载", "Start at the front and load toward the door")}
+                </span>
+              </div>
+            </div>
             <MixedPlanCanvas
               plan={selectedPlan}
               container={container}
               sideClearance={sideClearance}
               doorClearance={doorClearance}
               language={language}
+              visiblePositionCount={playbackVisible}
             />
             <div className="mixed-allocation-scroll">
               <table className="mixed-allocation-table">
@@ -2305,33 +2508,61 @@ export default function MixedPlanner({
               )}
             </b>
             <span>
-              {tr(
-                "必填：产品数量、EA/BOX、外箱尺寸；选择托盘时还必须填写托盘尺寸。",
-                "Required: product quantity, EA/BOX and carton size; pallet dimensions are also required for palletized rows.",
-              )}
+              {planningMode === "capacity"
+                ? tr(
+                    "必填：至少一个组件、EA/BOX、外箱尺寸；选择托盘时还必须填写托盘尺寸。齐套产品数量由系统自动最大化。",
+                    "Required: at least one component, EA/BOX and carton size; pallet dimensions are also required for palletized rows. Kit quantity is maximized automatically.",
+                  )
+                : tr(
+                    "必填：产品数量、EA/BOX、外箱尺寸；选择托盘时还必须填写托盘尺寸。",
+                    "Required: product quantity, EA/BOX and carton size; pallet dimensions are also required for palletized rows.",
+                  )}
             </span>
           </div>
         )}
       </section>
 
       <section
-        className="print-report mixed-print-report"
+        className={`print-report mixed-print-report${htmlReportOpen ? " html-report-open" : ""}`}
         lang={isEnglish ? "en" : "zh-CN"}
+        aria-hidden={!htmlReportOpen}
+        data-total-ea={result.totalDemandEa}
+        data-total-boxes={result.totalRequiredBoxes}
+        data-total-pallets={result.totalRequiredPallets}
+        data-total-cbm={result.totalRequiredVolumeCbm}
+        data-complete-kits={completeKits ?? ""}
       >
+        {htmlReportOpen ? (
+          <div className="html-report-toolbar" data-print-hidden="true">
+            <b>{tr("HTML 装柜报告预览", "HTML loading report preview")}</b>
+            <span>{reportReady ? tr("自检通过", "Preflight passed") : tr("尚未通过自检", "Preflight pending")}</span>
+            <button onClick={() => setHtmlReportOpen(false)}>{tr("返回规划器", "Back to planner")}</button>
+            <button className="primary" onClick={printReport}>{tr("打印 / PDF", "Print / PDF")}</button>
+          </div>
+        ) : null}
         <header className="report-header">
           <div>
-            <MegeeLogo className="report-brand-logo" />
+            <ReportBrand className="report-brand-logo" />
             <p>
               {isEnglish
                 ? "ZHEJIANG MEGEE INDUSTRY CO., LTD."
                 : "浙江美集实业有限公司"}
             </p>
-            <h1>{tr("多产品拼柜方案报告", "MIXED PRODUCT LOADING PLAN")}</h1>
+            <h1>
+              {planningMode === "capacity"
+                ? tr("柜容采购组合装柜报告", "CAPACITY PROCUREMENT LOADING PLAN")
+                : tr("多产品拼柜方案报告", "MIXED PRODUCT LOADING PLAN")}
+            </h1>
             <span>
-              {tr(
-                "纸箱 / 托盘 · 分柜分区 · 现场装柜操作指引",
-                "Carton / pallet · multi-container allocation · operator-ready instruction",
-              )}
+              {planningMode === "capacity"
+                ? tr(
+                    "固定 / 可调 / 齐套约束 · 真实几何最大化 · 现场装柜操作指引",
+                    "Fixed / adjustable / kit constraints · geometry-maximized · operator-ready instruction",
+                  )
+                : tr(
+                    "纸箱 / 托盘 · 分柜分区 · 现场装柜操作指引",
+                    "Carton / pallet · multi-container allocation · operator-ready instruction",
+                  )}
             </span>
           </div>
           <dl>
@@ -2348,9 +2579,13 @@ export default function MixedPlanner({
               <dd>{containerType}</dd>
             </div>
             <div>
+              <dt>{tr("方案名称", "Plan name")}</dt>
+              <dd>{planTitle || "—"}</dd>
+            </div>
+            <div>
               <dt>{tr("软件 / 算法", "Software / Algorithm")}</dt>
               <dd>
-                v{appVersion} / MIX 1.5
+                v{appVersion} / {algorithmVersion} / {buildVersion}
               </dd>
             </div>
             <div>
@@ -2377,8 +2612,8 @@ export default function MixedPlanner({
             <b>{validItems.length} SKU</b>
           </div>
           <div>
-            <span>{tr("产品数量", "PRODUCT QUANTITY")}</span>
-            <b>{formatNumber(result.totalDemandEa)} EA</b>
+            <span>{completeKits !== null ? tr("齐套数量 / 组件总数", "COMPLETE SETS / COMPONENT EA") : tr("产品数量", "PRODUCT QUANTITY")}</span>
+            <b>{completeKits !== null ? `${formatNumber(completeKits)} SET · ` : ""}{formatNumber(result.totalDemandEa)} EA</b>
           </div>
           <div>
             <span>{tr("总箱数 / 托盘数", "CARTONS / PALLETS")}</span>
@@ -2437,6 +2672,12 @@ export default function MixedPlanner({
                 ? tr("按输入顺序", "ENTERED SEQUENCE")
                 : tr("清晰分区", "CLEAR SKU ZONES")}
           </span>
+          {planningMode === "capacity" ? (
+            <span>
+              {tr("采购数量规则", "PROCUREMENT QUANTITY RULES")}：
+              {validItems.map((item) => `${item.code || item.name || item.id} = ${formatNumber(item.productQuantity)} EA`).join(" · ")}
+            </span>
+          ) : null}
         </div>
         <section className="report-section mixed-input-report">
           <h2>
@@ -2837,7 +3078,7 @@ export default function MixedPlanner({
       >
         <header className="packing-list-header">
           <div>
-            <MegeeLogo className="packing-list-logo" />
+            <ReportBrand className="packing-list-logo" />
             <p>
               {tr(
                 "浙江美集实业有限公司",
