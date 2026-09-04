@@ -6,7 +6,7 @@ import { join } from "node:path";
 const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const port = 9340;
 const profile = await mkdtemp(join(tmpdir(), "megee-v3-pdf-qa-"));
-const pdfPath = "/Users/coady/Documents/Codex/CTN QTY/output/reports/404-24牙喷头-20GP最大齐套装柜报告-v3.1.0.pdf";
+const pdfPath = "/Users/coady/Documents/Codex/CTN QTY/output/reports/404-24牙喷头-20GP最大齐套装柜报告-v3.3.0.pdf";
 const child = spawn(chrome, [
   "--headless=new",
   "--disable-gpu",
@@ -124,7 +124,7 @@ async function main() {
   }
 
   await waitFor(
-    `document.readyState === 'complete' && document.body.innerText.includes('集装箱装柜规划') && document.body.innerText.includes('按柜容反算')`,
+    `document.readyState === 'complete' && document.body.innerText.includes('产品与包装清单') && document.body.innerText.includes('按柜容反算')`,
     "v3 planner",
   );
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -186,9 +186,9 @@ async function main() {
       completeKits: Number(report.dataset.completeKits),
       totalBoxes: Number(report.dataset.totalBoxes),
       totalCbm: Number(report.dataset.totalCbm),
-      topViews: report.querySelectorAll('.mixed-plan-frame').length,
-      sideViews: report.querySelectorAll('.mixed-side-view').length,
-      endViews: report.querySelectorAll('.mixed-end-view').length,
+      topViews: report.querySelectorAll('.print-only-engineering .mixed-plan-frame').length,
+      sideViews: report.querySelectorAll('.print-only-engineering .mixed-side-view').length,
+      endViews: report.querySelectorAll('.print-only-engineering .mixed-end-view').length,
       palletViews: report.querySelectorAll('.pallet-pattern-card').length,
       invalidText: /\\b(?:NaN|Infinity|undefined|null)\\b/.test(report.textContent),
     };

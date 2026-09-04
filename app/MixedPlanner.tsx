@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
   cartonsForDemand,
   optimizeProcurementQuantities,
@@ -33,15 +33,17 @@ type SharedPlanPayload = {
 };
 
 const COLORS = [
-  "#0a6ed1",
-  "#7b3454",
-  "#18864b",
-  "#b95f00",
-  "#7454a6",
-  "#147d92",
-  "#b33f62",
-  "#687b20",
+  "#23679d",
+  "#667889",
+  "#3f7869",
+  "#73596b",
+  "#4f7887",
+  "#766f58",
+  "#526b83",
+  "#647866",
 ];
+
+const LoadingScene3D = lazy(() => import("./LoadingScene3D"));
 
 function emptyRow(index: number, id = `mix-initial-${index}`): MixedRow {
   return {
@@ -72,6 +74,15 @@ function formatNumber(value: number, digits = 0) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
+}
+
+function shortFingerprint(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36).toUpperCase().padStart(7, "0").slice(-7);
 }
 
 function ReportBrand({ className = "" }: { className?: string }) {
@@ -105,6 +116,16 @@ function PalletPatternView({
     plan.surfaceOriginY + plan.palletSurfaceW,
   );
   const isEnglish = language === "en";
+  const safePatternId = item.id.replace(/[^a-zA-Z0-9_-]/g, "");
+  const sideSegments = Array.from(
+    new Map(
+      plan.positions.map((position) => [
+        `${position.x}-${position.w}`,
+        { x: position.x, width: position.w, rotated: position.rotated },
+      ]),
+    ).values(),
+  ).sort((left, right) => left.x - right.x);
+  const elevationHeight = plan.stackHeight + 90;
   return (
     <article className="pallet-pattern-card">
       <header>
@@ -130,6 +151,17 @@ function PalletPatternView({
               : `${item.code || item.name} 托盘纸箱排布俯视图`
           }
         >
+          <defs>
+            <linearGradient id={`pallet-deck-${safePatternId}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stopColor="#93a8b6" />
+              <stop offset="1" stopColor="#617887" />
+            </linearGradient>
+            <pattern id={`pallet-slats-${safePatternId}`} width="110" height="110" patternUnits="userSpaceOnUse">
+              <rect width="110" height="110" fill={`url(#pallet-deck-${safePatternId})`} />
+              <path d="M0 55h110M55 0v110" stroke="#d7e1e7" strokeWidth="9" strokeOpacity=".34" />
+              <path d="M8 8h94v94H8z" fill="none" stroke="#415967" strokeWidth="5" strokeOpacity=".36" />
+            </pattern>
+          </defs>
           <rect width={diagramL} height={diagramW} fill="#f3f6f8" />
           <rect
             x={plan.palletOriginX}
@@ -137,9 +169,9 @@ function PalletPatternView({
             width={item.pallet.l}
             height={item.pallet.w}
             rx="14"
-            fill="#d8b679"
-            fillOpacity=".32"
-            stroke="#8b6328"
+            fill={`url(#pallet-slats-${safePatternId})`}
+            fillOpacity=".72"
+            stroke="#415967"
             strokeWidth="9"
           />
           <rect
@@ -177,6 +209,57 @@ function PalletPatternView({
             </g>
           ))}
         </svg>
+        <div className="pallet-stack-elevation">
+          <b>{isEnglish ? "STACK ELEVATION" : "逐层堆叠侧视"}</b>
+          <span>
+            {plan.layersPerPallet} {isEnglish ? "carton layers" : "层纸箱"} + {item.pallet.h} mm {isEnglish ? "pallet" : "托盘"} = {formatNumber(plan.stackHeight)} mm
+          </span>
+          <svg
+            viewBox={`0 0 ${diagramL} ${elevationHeight}`}
+            role="img"
+            aria-label={isEnglish ? `Pallet stack elevation for ${item.code || item.name}` : `${item.code || item.name} 托盘逐层堆叠侧视图`}
+          >
+            <defs>
+              <linearGradient id={`stack-box-${safePatternId}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stopColor="#eef5fa" />
+                <stop offset="1" stopColor="#c9deec" />
+              </linearGradient>
+              <linearGradient id={`stack-plastic-${safePatternId}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stopColor="#91a6b4" />
+                <stop offset="1" stopColor="#526a79" />
+              </linearGradient>
+            </defs>
+            <rect width={diagramL} height={elevationHeight} fill="#f3f6f8" />
+            <line x1="0" y1={plan.stackHeight + 8} x2={diagramL} y2={plan.stackHeight + 8} stroke="#9ba9b2" strokeWidth="8" />
+            {Array.from({ length: plan.layersPerPallet }, (_, layerIndex) => {
+              const y = plan.stackHeight - item.pallet.h - (layerIndex + 1) * item.carton.h;
+              return sideSegments.map((segment, segmentIndex) => (
+                <g key={`stack-${layerIndex}-${segment.x}-${segmentIndex}`}>
+                  <rect
+                    x={segment.x}
+                    y={y}
+                    width={segment.width}
+                    height={item.carton.h}
+                    rx="8"
+                    fill={`url(#stack-box-${safePatternId})`}
+                    stroke="#356f98"
+                    strokeWidth="5"
+                  />
+                  {layerIndex === 0 ? (
+                    <text x={segment.x + segment.width / 2} y={y + item.carton.h / 2} textAnchor="middle" dominantBaseline="middle" fill="#244b64" fontSize="34" fontWeight="800">
+                      {segment.rotated ? "90°" : "0°"}
+                    </text>
+                  ) : null}
+                </g>
+              ));
+            })}
+            <rect x={plan.palletOriginX} y={plan.stackHeight - item.pallet.h} width={item.pallet.l} height={Math.max(28, item.pallet.h * 0.38)} rx="8" fill={`url(#stack-plastic-${safePatternId})`} stroke="#405866" strokeWidth="6" />
+            <rect x={plan.palletOriginX + item.pallet.l * 0.07} y={plan.stackHeight - item.pallet.h * 0.58} width={item.pallet.l * 0.86} height={Math.max(30, item.pallet.h * 0.42)} rx="6" fill={`url(#stack-plastic-${safePatternId})`} stroke="#405866" strokeWidth="6" />
+            {[0.12, 0.46, 0.8].map((ratio) => (
+              <rect key={ratio} x={plan.palletOriginX + item.pallet.l * ratio} y={plan.stackHeight - item.pallet.h * 0.56} width={item.pallet.l * 0.08} height={Math.max(28, item.pallet.h * 0.4)} rx="4" fill="#354f5e" />
+            ))}
+          </svg>
+        </div>
         {!plan.finalTopFlat ? (
           <div className="pallet-top-surface">
             <div>
@@ -189,13 +272,13 @@ function PalletPatternView({
             </div>
             <svg viewBox={`0 0 ${diagramL} ${diagramW}`} role="img">
               <defs>
-                <pattern id={`top-fill-${item.id.replace(/[^a-zA-Z0-9_-]/g, "")}`} width="36" height="36" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <pattern id={`top-fill-${safePatternId}`} width="36" height="36" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
                   <rect width="36" height="36" fill="#fff3f0" />
                   <rect width="12" height="36" fill="#d84b3e" fillOpacity=".42" />
                 </pattern>
               </defs>
               <rect width={diagramL} height={diagramW} fill="#f3f6f8" />
-              <rect x={plan.palletOriginX} y={plan.palletOriginY} width={item.pallet.l} height={item.pallet.w} rx="14" fill="#d8b679" fillOpacity=".26" stroke="#8b6328" strokeWidth="9" />
+              <rect x={plan.palletOriginX} y={plan.palletOriginY} width={item.pallet.l} height={item.pallet.w} rx="14" fill="#718895" fillOpacity=".34" stroke="#415967" strokeWidth="9" />
               {plan.positions.map((position, index) => {
                 const filled = index < plan.finalTopLayerCartons;
                 return (
@@ -205,7 +288,7 @@ function PalletPatternView({
                       y={position.y}
                       width={position.w}
                       height={position.h}
-                      fill={filled ? "#dcecf8" : `url(#top-fill-${item.id.replace(/[^a-zA-Z0-9_-]/g, "")})`}
+                      fill={filled ? "#dcecf8" : `url(#top-fill-${safePatternId})`}
                       stroke={filled ? "#0a6ed1" : "#d84b3e"}
                       strokeWidth="6"
                       strokeDasharray={filled ? undefined : "20 12"}
@@ -269,11 +352,17 @@ function MixedEndView({
   plan,
   container,
   sideClearance,
+  topClearance,
+  doorWidth,
+  doorHeight,
   language,
 }: {
   plan: ReturnType<typeof planMixedContainers>["containers"][number];
   container: Dimensions;
   sideClearance: number;
+  topClearance: number;
+  doorWidth: number;
+  doorHeight: number;
   language: Language;
 }) {
   const isEnglish = language === "en";
@@ -319,6 +408,8 @@ function MixedEndView({
       right.startX - left.startX,
   )[0];
   if (!section) return null;
+  const doorOriginX = Math.max(0, (container.w - doorWidth) / 2);
+  const doorOriginY = Math.max(0, container.h - doorHeight);
   return (
     <section className="mixed-end-view" aria-label={isEnglish ? "Container end view" : "集装箱端视图"}>
       <h4>
@@ -336,11 +427,33 @@ function MixedEndView({
         aria-label={isEnglish ? "Fullest real container end section" : "集装箱实际最满端面"}
       >
         <defs>
+          <linearGradient id={`end-shell-${plan.index}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#fbfcfd" />
+            <stop offset="1" stopColor="#e5eaee" />
+          </linearGradient>
+          <filter id={`end-shadow-${plan.index}`} x="-20%" y="-20%" width="140%" height="150%">
+            <feDropShadow dx="0" dy="18" stdDeviation="18" floodColor="#12293a" floodOpacity=".16" />
+          </filter>
           <pattern id={`end-tail-${plan.index}`} width="70" height="70" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <rect width="34" height="70" fill="#d3362d" opacity=".7" />
           </pattern>
         </defs>
-        <rect width={container.w} height={container.h} fill="#eef2f4" />
+        <rect width={container.w} height={container.h} fill={`url(#end-shell-${plan.index})`} />
+        <rect
+          x={doorOriginX}
+          y={doorOriginY}
+          width={Math.min(container.w, doorWidth)}
+          height={Math.min(container.h, doorHeight)}
+          rx="28"
+          fill="none"
+          stroke="#9aa9b3"
+          strokeWidth="15"
+          strokeDasharray="44 26"
+        />
+        <rect x="0" y="0" width={container.w} height={topClearance} fill="#7aa7c7" fillOpacity=".11" />
+        <rect x="0" y="0" width={sideClearance} height={container.h} fill="#7aa7c7" fillOpacity=".12" />
+        <rect x={container.w - sideClearance} y="0" width={sideClearance} height={container.h} fill="#7aa7c7" fillOpacity=".12" />
+        <line x1="0" y1={container.h - 18} x2={container.w} y2={container.h - 18} stroke="#6e7f89" strokeWidth="18" />
         {section.positions.map((position, index) => {
           const blockIndex = plan.blocks.findIndex((entry) => entry.item.id === position.skuId);
           const block = plan.blocks[blockIndex];
@@ -358,9 +471,11 @@ function MixedEndView({
                 width={position.h}
                 height={stackHeight}
                 fill={color}
-                fillOpacity=".22"
+                fillOpacity=".24"
                 stroke={color}
                 strokeWidth="10"
+                rx="12"
+                filter={`url(#end-shadow-${plan.index})`}
               />
               {Array.from({ length: Math.max(0, position.stackBoxes - 1) }, (_, layer) => (
                 <line
@@ -404,16 +519,19 @@ function MixedEndView({
                 fontSize="52"
                 fontWeight="700"
               >
-                ×{position.stackBoxes} {position.packaging === "pallet" ? "PLT" : "BOX"}
+                {position.stackBoxes} {position.packaging === "pallet" ? "PLT" : (isEnglish ? "LAYERS" : "层")}
               </text>
             </g>
           );
         })}
+        <text x={container.w / 2} y="82" textAnchor="middle" fill="#627786" fontSize="56" fontWeight="700">
+          {isEnglish ? `TOP CLEARANCE ${formatNumber(topClearance)} mm` : `顶部安全余量 ${formatNumber(topClearance)} mm`}
+        </text>
       </svg>
       <div className="mixed-end-note">
         <b>{isEnglish ? "DOOR → FRONT" : "箱门 → 箱头"}</b>
         <span>
-          {isEnglish ? "Actual section at" : "实际断面位置"}{" "}
+          {isEnglish ? "Fullest measured section at" : "选取占用面积最大的真实断面"}{" "}
           {formatNumber(section.startX)}–{formatNumber(section.endX)} mm
         </span>
       </div>
@@ -425,11 +543,13 @@ function MixedSideView({
   plan,
   container,
   doorClearance,
+  topClearance,
   language,
 }: {
   plan: ReturnType<typeof planMixedContainers>["containers"][number];
   container: Dimensions;
   doorClearance: number;
+  topClearance: number;
   language: Language;
 }) {
   const isEnglish = language === "en";
@@ -449,6 +569,7 @@ function MixedSideView({
     codes: string[];
     colors: string[];
     hasPartial: boolean;
+    unitHeight: number;
   }> = [];
 
   boundaries.slice(0, -1).forEach((startX, index) => {
@@ -473,6 +594,7 @@ function MixedSideView({
           height: position.stackBoxes * (block?.item.loadingUnit.h ?? 0),
           levels: position.stackBoxes,
           partial: Boolean(position.partialCartonEa),
+          unitHeight: block?.item.loadingUnit.h ?? 0,
         };
       })
       .sort((a, b) => a.code.localeCompare(b.code));
@@ -481,12 +603,14 @@ function MixedSideView({
     const height = Math.max(...details.map((detail) => detail.height));
     const levels = Math.max(...details.map((detail) => detail.levels));
     const hasPartial = details.some((detail) => detail.partial);
+    const unitHeight = Math.max(...details.map((detail) => detail.unitHeight));
     const previous = slices.at(-1);
     if (
       previous &&
       Math.abs(previous.endX - startX) < 0.01 &&
       Math.abs(previous.height - height) < 0.01 &&
       previous.levels === levels &&
+      Math.abs(previous.unitHeight - unitHeight) < 0.01 &&
       previous.hasPartial === hasPartial &&
       previous.codes.join("|") === codes.join("|")
     ) {
@@ -501,6 +625,7 @@ function MixedSideView({
       codes,
       colors,
       hasPartial,
+      unitHeight,
     });
   });
 
@@ -518,7 +643,6 @@ function MixedSideView({
         <svg
           className="mixed-side-frame"
           viewBox={`0 0 ${container.l} ${container.h}`}
-          preserveAspectRatio="none"
           role="img"
           aria-label={
             isEnglish
@@ -527,6 +651,13 @@ function MixedSideView({
           }
         >
           <defs>
+            <linearGradient id={`side-shell-${plan.index}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stopColor="#fbfcfd" />
+              <stop offset="1" stopColor="#e5eaee" />
+            </linearGradient>
+            <filter id={`side-shadow-${plan.index}`} x="-10%" y="-20%" width="120%" height="150%">
+              <feDropShadow dx="0" dy="20" stdDeviation="16" floodColor="#12293a" floodOpacity=".14" />
+            </filter>
             {slices.map((slice, index) => (
               <linearGradient
                 id={`side-slice-${plan.index}-${index}`}
@@ -551,7 +682,12 @@ function MixedSideView({
               </linearGradient>
             ))}
           </defs>
-          <rect width={container.l} height={container.h} fill="#f1f4f6" />
+          <rect width={container.l} height={container.h} fill={`url(#side-shell-${plan.index})`} />
+          {Array.from({ length: Math.max(1, Math.floor(container.l / 1000)) }, (_, index) => (
+            <line key={`side-grid-${index}`} x1={(index + 1) * 1000} y1="0" x2={(index + 1) * 1000} y2={container.h} stroke="#748894" strokeWidth="4" strokeOpacity=".12" />
+          ))}
+          <rect x="0" y="0" width={container.l} height={topClearance} fill="#7aa7c7" fillOpacity=".12" />
+          <line x1="0" y1={container.h - 15} x2={container.l} y2={container.h - 15} stroke="#6e7f89" strokeWidth="16" />
           {slices.map((slice, index) => {
             const top = container.h - slice.height;
             const width = slice.endX - slice.startX;
@@ -567,7 +703,21 @@ function MixedSideView({
                   stroke={slice.hasPartial ? "#c93228" : slice.colors[0]}
                   strokeWidth={slice.hasPartial ? "15" : "8"}
                   strokeDasharray={slice.hasPartial ? "36 20" : undefined}
+                  rx="12"
+                  filter={`url(#side-shadow-${plan.index})`}
                 />
+                {Array.from({ length: Math.max(0, slice.levels - 1) }, (_, layer) => (
+                  <line
+                    key={`layer-${layer}`}
+                    x1={slice.startX}
+                    x2={slice.endX}
+                    y1={top + (layer + 1) * slice.unitHeight}
+                    y2={top + (layer + 1) * slice.unitHeight}
+                    stroke={slice.colors[0]}
+                    strokeWidth="5"
+                    strokeOpacity=".55"
+                  />
+                ))}
                 <title>
                   {slice.codes.join("+")} · ×{slice.levels} · {formatNumber(slice.height)} mm
                 </title>
@@ -611,6 +761,9 @@ function MixedSideView({
             strokeWidth="12"
             strokeDasharray="28 20"
           />
+          <text x={container.l - doorClearance / 2} y={container.h / 2} textAnchor="middle" fill="#a23f37" fontSize="52" fontWeight="800" transform={`rotate(-90 ${container.l - doorClearance / 2} ${container.h / 2})`}>
+            {isEnglish ? "DOOR CLEARANCE" : "柜门余量"}
+          </text>
         </svg>
       </div>
       <div className="mixed-side-axis">
@@ -627,6 +780,11 @@ function MixedPlanCanvas({
   container,
   sideClearance,
   doorClearance,
+  topClearance,
+  cartonGap,
+  skuGap,
+  doorWidth,
+  doorHeight,
   language,
   visiblePositionCount,
 }: {
@@ -634,6 +792,11 @@ function MixedPlanCanvas({
   container: Dimensions;
   sideClearance: number;
   doorClearance: number;
+  topClearance: number;
+  cartonGap: number;
+  skuGap: number;
+  doorWidth: number;
+  doorHeight: number;
   language: Language;
   visiblePositionCount?: number;
 }) {
@@ -673,6 +836,20 @@ function MixedPlanCanvas({
             }
           >
             <defs>
+              <linearGradient id={`floor-${plan.index}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stopColor="#fafcfd" />
+                <stop offset="1" stopColor="#e4e9ed" />
+              </linearGradient>
+              <filter id={`cargo-shadow-${plan.index}`} x="-20%" y="-20%" width="150%" height="150%">
+                <feDropShadow dx="0" dy="16" stdDeviation="13" floodColor="#102838" floodOpacity=".15" />
+              </filter>
+              {plan.blocks.map((block, index) => (
+                <linearGradient id={`cargo-${plan.index}-${index}`} key={`gradient-${block.item.id}`} x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor={COLORS[index % COLORS.length]} stopOpacity=".11" />
+                  <stop offset=".58" stopColor={COLORS[index % COLORS.length]} stopOpacity=".25" />
+                  <stop offset="1" stopColor={COLORS[index % COLORS.length]} stopOpacity=".34" />
+                </linearGradient>
+              ))}
               <pattern
                 id={`mixed-tail-${plan.index}`}
                 width="90"
@@ -688,16 +865,26 @@ function MixedPlanCanvas({
               y="0"
               width={container.l}
               height={container.w}
-              fill="#f1f4f6"
+              fill={`url(#floor-${plan.index})`}
             />
+            {Array.from({ length: Math.max(1, Math.floor(container.l / 500)) }, (_, index) => (
+              <line key={`floor-rib-${index}`} x1={(index + 1) * 500} y1="0" x2={(index + 1) * 500} y2={container.w} stroke="#70838f" strokeWidth="3" strokeOpacity=".1" />
+            ))}
+            <rect x="0" y="0" width={container.l} height={sideClearance} fill="#7aa7c7" fillOpacity=".14" />
+            <rect x="0" y={container.w - sideClearance} width={container.l} height={sideClearance} fill="#7aa7c7" fillOpacity=".14" />
             {visiblePositions.map((position, index) => {
               const blockIndex = plan.blocks.findIndex(
                 (block) => block.item.id === position.skuId,
               );
               const color = COLORS[Math.max(0, blockIndex) % COLORS.length];
+              const positionLabel = String(position.code || blockIndex + 1);
               const textSize = Math.max(
-                62,
-                Math.min(position.w, position.h) * 0.18,
+                36,
+                Math.min(
+                  Math.min(position.w, position.h) * 0.18,
+                  (position.w * 0.9) /
+                    Math.max(4.8, positionLabel.length * 0.61),
+                ),
               );
               return (
                 <g
@@ -709,15 +896,28 @@ function MixedPlanCanvas({
                     y={position.y + sideClearance}
                     width={position.w}
                     height={position.h}
-                    fill={
-                      position.partialCartonEa
-                        ? `url(#mixed-tail-${plan.index})`
-                        : color
-                    }
-                    fillOpacity={position.partialCartonEa ? 1 : 0.2}
+                    fill={position.partialCartonEa ? `url(#mixed-tail-${plan.index})` : `url(#cargo-${plan.index}-${Math.max(0, blockIndex)})`}
+                    fillOpacity="1"
                     stroke={position.partialCartonEa ? "#c93228" : color}
                     strokeWidth={position.partialCartonEa ? 18 : 8}
+                    rx="13"
+                    filter={`url(#cargo-shadow-${plan.index})`}
                   />
+                  <rect
+                    x={position.x + 12}
+                    y={position.y + sideClearance + 12}
+                    width={Math.max(0, position.w - 24)}
+                    height={Math.max(0, position.h - 24)}
+                    rx="9"
+                    fill="none"
+                    stroke="#ffffff"
+                    strokeOpacity=".68"
+                    strokeWidth="5"
+                  />
+                  <circle cx={position.x + 42} cy={position.y + sideClearance + 42} r="25" fill="#ffffff" fillOpacity=".9" stroke={color} strokeWidth="4" />
+                  <text x={position.x + 42} y={position.y + sideClearance + 50} textAnchor="middle" fill={color} fontSize="28" fontWeight="800">
+                    {index + 1}
+                  </text>
                   <text
                     x={position.x + position.w / 2}
                     y={position.y + sideClearance + position.h * 0.46}
@@ -726,7 +926,7 @@ function MixedPlanCanvas({
                     fontSize={textSize}
                     fontWeight="800"
                   >
-                    {position.code || blockIndex + 1}
+                    {positionLabel}
                   </text>
                   <text
                     x={position.x + position.w / 2}
@@ -741,6 +941,16 @@ function MixedPlanCanvas({
                     {position.partialCartonEa
                       ? ` · ${position.partialCartonEa} EA`
                       : ""}
+                  </text>
+                  <text
+                    x={position.x + position.w / 2}
+                    y={position.y + sideClearance + position.h * 0.88}
+                    textAnchor="middle"
+                    fill="#36586e"
+                    fontSize={textSize * 0.62}
+                    fontWeight="700"
+                  >
+                    {position.rotated ? "90°" : "0°"} · {formatNumber(position.w)}×{formatNumber(position.h)}
                   </text>
                 </g>
               );
@@ -801,7 +1011,7 @@ function MixedPlanCanvas({
         {plan.blocks.map((block, index) => (
           <span key={block.item.id}>
             <i style={{ background: COLORS[index % COLORS.length] }} />
-            {block.item.code || block.item.name} ·{" "}
+            {block.item.code || block.item.name} · {isEnglish ? "floor positions" : "落地位"} {block.normalFloorPositions + block.rotatedFloorPositions} ·{" "}
             {block.item.packaging === "pallet"
               ? `${block.loadedPallets} PLT · `
               : ""}
@@ -812,6 +1022,12 @@ function MixedPlanCanvas({
               : ""}
           </span>
         ))}
+      </div>
+      <div className="mixed-dimension-strip" aria-label={isEnglish ? "Verified container dimensions and clearances" : "经校验的柜内尺寸与安全余量"}>
+        <span><small>{isEnglish ? "INTERNAL" : "柜内尺寸"}</small><b>{formatNumber(container.l)} × {formatNumber(container.w)} × {formatNumber(container.h)} mm</b></span>
+        <span><small>{isEnglish ? "USED LENGTH" : "实际占长"}</small><b>{formatNumber(plan.usedLength)} mm</b></span>
+        <span><small>{isEnglish ? "DOOR END FREE" : "门端净余"}</small><b>{formatNumber(plan.remainingLength)} mm</b></span>
+        <span><small>{isEnglish ? "CLEARANCE" : "安全间隔"}</small><b>{isEnglish ? `carton ${cartonGap} · SKU ${skuGap} · side ${sideClearance} mm` : `箱间 ${cartonGap} · SKU间 ${skuGap} · 侧边 ${sideClearance} mm`}</b></span>
       </div>
       <div className="mixed-view-key">
         <span>
@@ -827,18 +1043,24 @@ function MixedPlanCanvas({
             : "空白为真实未占用空间，由整箱/整托尺寸、间隙及订单数量共同产生。"}
         </span>
       </div>
-      <MixedSideView
-        plan={plan}
-        container={container}
-        doorClearance={doorClearance}
-        language={language}
-      />
-      <MixedEndView
-        plan={plan}
-        container={container}
-        sideClearance={sideClearance}
-        language={language}
-      />
+      <div className="mixed-secondary-views">
+        <MixedSideView
+          plan={plan}
+          container={container}
+          doorClearance={doorClearance}
+          topClearance={topClearance}
+          language={language}
+        />
+        <MixedEndView
+          plan={plan}
+          container={container}
+          sideClearance={sideClearance}
+          topClearance={topClearance}
+          doorWidth={doorWidth}
+          doorHeight={doorHeight}
+          language={language}
+        />
+      </div>
     </div>
   );
 }
@@ -1252,8 +1474,32 @@ export default function MixedPlanner({
     day: "2-digit",
     timeZone: "Asia/Shanghai",
   }).format(new Date());
-  const reportNumber = `${planningMode === "capacity" ? "CAP" : "ORD"}-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`;
-  const packingListNumber = `PL-${containerType}-${validItems.length}-${result.totalRequiredBoxes}`;
+  const reportDateToken = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone: "Asia/Shanghai",
+  }).format(new Date()).replaceAll("-", "");
+  const documentFingerprint = shortFingerprint(JSON.stringify({
+    planningMode,
+    containerType,
+    containerCount,
+    planTitle: planTitle.trim(),
+    inputs: validItems.map((item) => ({
+      id: item.id,
+      series: item.series,
+      code: item.code,
+      name: item.name,
+      quantity: item.productQuantity,
+      eaPerBox: item.eaPerBox,
+      carton: item.carton,
+      packaging: item.packaging,
+      pallet: item.pallet,
+    })),
+    loadingConfig,
+  }));
+  const reportNumber = `${planningMode === "capacity" ? "CAP" : "ORD"}-${containerType}-${reportDateToken}-${documentFingerprint}`;
+  const packingListNumber = `PL-${containerType}-${reportDateToken}-${documentFingerprint}`;
   const updateRow = (id: string, patch: Partial<MixedRow>) => {
     setRows((current) =>
       current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
@@ -2431,14 +2677,37 @@ export default function MixedPlanner({
                 </span>
               </div>
             </div>
-            <MixedPlanCanvas
-              plan={selectedPlan}
-              container={container}
-              sideClearance={sideClearance}
-              doorClearance={doorClearance}
-              language={language}
-              visiblePositionCount={playbackVisible}
-            />
+            {!htmlReportOpen ? (
+              <Suspense fallback={<div className="loading-scene-placeholder">{tr("正在建立三维装柜场景…", "Building 3D loading scene…")}</div>}>
+                <LoadingScene3D
+                  plan={selectedPlan}
+                  container={container}
+                  sideClearance={sideClearance}
+                  doorClearance={doorClearance}
+                  language={language}
+                  visiblePositionCount={playbackVisible}
+                />
+              </Suspense>
+            ) : null}
+            <details className="engineering-checks">
+              <summary>
+                <b>{tr("展开工程校核三视图", "Open engineering verification views")}</b>
+                <span>{tr("用于复核坐标、方向、净空与尾箱", "Coordinates, orientation, clearances and partial carton")}</span>
+              </summary>
+              <MixedPlanCanvas
+                plan={selectedPlan}
+                container={container}
+                sideClearance={sideClearance}
+                doorClearance={doorClearance}
+                topClearance={topClearance}
+                cartonGap={cartonGap}
+                skuGap={skuGap}
+                doorWidth={result.config.doorWidth}
+                doorHeight={result.config.doorHeight}
+                language={language}
+                visiblePositionCount={playbackVisible}
+              />
+            </details>
             <div className="mixed-allocation-scroll">
               <table className="mixed-allocation-table">
                 <thead>
@@ -2564,8 +2833,8 @@ export default function MixedPlanner({
             <span>
               {reportReady
                 ? executionConditional
-                  ? tr("数据与几何通过 · 现场处置待确认", "Data and geometry passed · site action pending")
-                  : tr("数据与几何校验通过", "Data and geometry passed")
+                  ? tr("计算与几何校验通过 · 现场处置待确认", "Calculation and geometry passed · site action pending")
+                  : tr("计算与几何校验通过 · 输入待现场核对", "Calculation and geometry passed · verify physical inputs on site")
                 : tr("尚未通过自检", "Preflight pending")}
             </span>
             <button onClick={() => setHtmlReportOpen(false)}>{tr("返回规划器", "Back to planner")}</button>
@@ -2580,18 +2849,18 @@ export default function MixedPlanner({
             </p>
             <h1>
               {planningMode === "capacity"
-                ? tr("柜容采购组合装柜报告", "CAPACITY PROCUREMENT LOADING PLAN")
-                : tr("多产品拼柜方案报告", "MIXED PRODUCT LOADING PLAN")}
+                ? tr("按柜容采购装柜方案", "CAPACITY-BASED PROCUREMENT LOADING PLAN")
+                : tr("订单装柜方案", "ORDER LOADING PLAN")}
             </h1>
             <span>
               {planningMode === "capacity"
                 ? tr(
-                    "固定 / 可调 / 齐套约束 · 真实几何最大化 · 现场装柜操作指引",
-                    "Fixed / adjustable / kit constraints · geometry-maximized · operator-ready instruction",
+                    "输入参数快照 · 齐套与数量约束 · 真实排布 · 现场装柜指引",
+                    "Input snapshot · kit and quantity constraints · physical layout · loading instruction",
                   )
                 : tr(
-                    "纸箱 / 托盘 · 分柜分区 · 现场装柜操作指引",
-                    "Carton / pallet · multi-container allocation · operator-ready instruction",
+                    "输入参数快照 · 纸箱 / 托盘真实排布 · 分柜分区 · 现场装柜指引",
+                    "Input snapshot · physical carton / pallet layout · zones · loading instruction",
                   )}
             </span>
           </div>
@@ -2629,12 +2898,12 @@ export default function MixedPlanner({
                   ? tr("存在异常 · 禁止执行", "EXCEPTION · DO NOT EXECUTE")
                   : executionConditional
                     ? tr(
-                        "数据与几何通过 · 现场处置待确认",
-                        "DATA & GEOMETRY PASS · SITE ACTION PENDING",
+                        "计算与几何校验通过 · 现场处置待确认",
+                        "CALCULATION & GEOMETRY PASS · SITE ACTION PENDING",
                       )
                     : tr(
-                        "数据与几何通过 · 待现场复核",
-                        "DATA & GEOMETRY PASS · SITE REVIEW PENDING",
+                        "计算与几何校验通过 · 输入待现场核对",
+                        "CALCULATION & GEOMETRY PASS · VERIFY PHYSICAL INPUTS",
                       )}
               </dd>
             </div>
@@ -2677,12 +2946,12 @@ export default function MixedPlanner({
           <b>
             {executionConditional
               ? tr(
-                  "数据、数量与几何自检：通过；现场处置项待确认",
-                  "DATA, QUANTITY & GEOMETRY: PASS; SITE ACTION PENDING",
+                  "计算、数量守恒与几何自检：通过；现场处置项待确认",
+                  "CALCULATION, QUANTITY CONSERVATION & GEOMETRY: PASS; SITE ACTION PENDING",
                 )
               : tr(
-                  "数据、数量与几何自检：通过",
-                  "DATA, QUANTITY & GEOMETRY: PASS",
+                  "计算、数量守恒与几何自检：通过；计算以本报告输入参数为准",
+                  "CALCULATION, QUANTITY CONSERVATION & GEOMETRY: PASS; THIS REPORT INPUT IS AUTHORITATIVE",
                 )}
           </b>
           <span>
@@ -2696,10 +2965,17 @@ export default function MixedPlanner({
             {formatNumber(result.config.doorHeight)} mm
           </span>
           <span>
-            {tr("参数来源", "PARAMETER BASIS")}：
+            {tr("计算输入", "CALCULATION INPUT")}：
             {tr(
-              "设备参考值 + 企业工程默认值；水平总空隙按 CTU Code 150 mm 控制线",
-              "equipment references + company engineering defaults; horizontal total void checked against the CTU Code 150 mm control line",
+              "产品数量、EA/BOX、外箱及托盘尺寸均取自本报告参数快照；系统不以历史资料覆盖当前输入",
+              "product quantity, EA/BOX, carton and pallet dimensions are frozen from this report; historical data never overrides current input",
+            )}
+          </span>
+          <span>
+            {tr("工程控制", "ENGINEERING CONTROL")}：
+            {tr(
+              "柜体/门洞参考值与企业安全间隔参与几何计算；现场执行前须复测",
+              "container/door references and company clearances are used for geometry and must be re-measured before execution",
             )}
           </span>
           {result.totalRequiredPallets ? (
@@ -2819,6 +3095,62 @@ export default function MixedPlanner({
             </section>
           ) : null}
         </section>
+        <section className="report-section report-principles">
+          <h2>
+            <span>{tr("核", "QA")}</span>
+            {tr("计算口径与现场执行原则", "CALCULATION BASIS & EXECUTION RULES")}
+          </h2>
+          <ol>
+            <li>
+              {tr(
+                "每款纸箱高度始终向上，仅允许底面长宽旋转 90°；任何纸箱或托盘不得重叠、挤压或缩小规定间隙。",
+                "Keep every carton upright. Only 90° base rotation is permitted. Cartons and pallets must never overlap, compress or reduce the specified clearance.",
+              )}
+            </li>
+            <li>
+              {tr(
+                "包装方式以报告为准：纸箱 SKU 直接装柜；托盘 SKU 必须先按报告计算的每托箱数、纸箱层数和托盘总高完成组托，再整托装柜。",
+                "Follow the reported packaging method: load carton SKUs directly; palletized SKUs must first be built to the calculated cartons per pallet, carton layers and loaded pallet height, then loaded as complete pallet units.",
+              )}
+            </li>
+            <li>
+              {tr(
+                "托盘纸箱不得超出托盘有效承载面；平底托盘仅在报告标明时允许上下双层。每个下层托盘顶面必须满层、平整并经承载确认；未满层末托只能置于上层，或使用同尺寸兼容纸箱/经批准的刚性补平材料形成连续承压面。",
+                "Cartons must remain inside the pallet loading surface. Double stacking of flat-bottom pallets is allowed only where shown. Every lower pallet must have a complete, level and load-approved top; an incomplete final pallet must remain top-only or be levelled with compatible same-size cartons or approved rigid material to form a continuous bearing surface.",
+              )}
+            </li>
+            <li>
+              {tr(
+                "按报告的柜号与分区顺序，从箱头向箱门装载；完成一个 SKU 分区并核对托盘数、箱数和产品数量后再进入下一分区。",
+                "Load from front to door by container and zone sequence. Verify pallets, cartons and product quantity for each SKU before moving to the next zone.",
+              )}
+            </li>
+            <li>
+              {tr(
+                "尾箱仍按完整外箱尺寸占用一个装载位；用合规缓冲材料填实内部空隙，封箱并标注实际 EA，固定在该 SKU 区末最上层，禁止挤压或在其上堆放满箱。使用更小的专用尾箱时，须作为独立外箱尺寸重新计算，不得现场临时替换。",
+                "A partial final carton occupies one full-size position. Fill its void with approved dunnage, seal it, mark the actual EA and secure it on top at the zone end; never compress it or stack full cartons above. A smaller dedicated partial carton must be entered as a separate size and recalculated, never substituted on site.",
+              )}
+            </li>
+            <li>
+              {tr(
+                "单一水平方向空隙合计不得超过 150 mm；超过时须按本报告警示补货或采用经批准的挡木、填充、支撑/系固方案并签字后封柜。图中红色斜纹为柜门禁放区，任何包装不得越过有效装载边界。",
+                "Total void in any horizontal direction must not exceed 150 mm. Where exceeded, add planned cargo or use approved blocking, filling, bracing/securing and obtain sign-off before closing. The red hatched strip is the door no-load zone; no package may cross the effective loading boundary.",
+              )}
+            </li>
+            <li>
+              {tr(
+                `执行前复核实测柜内尺寸和门洞（参考 ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm）、门框角柱、总载重、重心、托盘承载、纸箱抗压和装卸顺序。`,
+                `Before execution, verify measured internal dimensions and door opening (reference ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm), door frame, corner posts, payload, centre of gravity, pallet capacity, carton compression strength and unloading order.`,
+              )}
+            </li>
+            <li>
+              {tr(
+                "本报告自动采用通过边界、间隙与高度校验的最紧凑装载方案；默认禁止不同 SKU 上下混堆。本报告不替代承重与现场安全校核。",
+                "This report automatically uses the most compact layout that passes boundary, clearance and height checks. Vertical stacking between different SKUs is prohibited by default. This report does not replace load-bearing or site safety checks.",
+              )}
+            </li>
+          </ol>
+        </section>
         {result.containers.map((plan, planIndex) => (
           <section
             className={`report-section mixed-container-report${planIndex > 0 ? " report-page-break" : ""}`}
@@ -2877,13 +3209,49 @@ export default function MixedPlanner({
                 )}</span>
               </div>
             ) : null}
-            <MixedPlanCanvas
-              plan={plan}
-              container={container}
-              sideClearance={sideClearance}
-              doorClearance={doorClearance}
-              language={language}
-            />
+            {htmlReportOpen ? (
+              <Suspense fallback={<div className="loading-scene-placeholder">{tr("正在建立三维装柜场景…", "Building 3D loading scene…")}</div>}>
+                <LoadingScene3D
+                  plan={plan}
+                  container={container}
+                  sideClearance={sideClearance}
+                  doorClearance={doorClearance}
+                  language={language}
+                />
+              </Suspense>
+            ) : null}
+            <details className="engineering-checks report-engineering-checks">
+              <summary>
+                <b>{tr("工程校核三视图", "Engineering verification views")}</b>
+                <span>{tr("打印 / PDF 自动完整显示", "Fully shown in print / PDF")}</span>
+              </summary>
+              <MixedPlanCanvas
+                plan={plan}
+                container={container}
+                sideClearance={sideClearance}
+                doorClearance={doorClearance}
+                topClearance={topClearance}
+                cartonGap={cartonGap}
+                skuGap={skuGap}
+                doorWidth={result.config.doorWidth}
+                doorHeight={result.config.doorHeight}
+                language={language}
+              />
+            </details>
+            <div className="print-only-engineering" aria-hidden="true">
+              <MixedPlanCanvas
+                plan={plan}
+                container={container}
+                sideClearance={sideClearance}
+                doorClearance={doorClearance}
+                topClearance={topClearance}
+                cartonGap={cartonGap}
+                skuGap={skuGap}
+                doorWidth={result.config.doorWidth}
+                doorHeight={result.config.doorHeight}
+                language={language}
+              />
+            </div>
             <table
               className={`mixed-report-allocation${
                 planIndex === result.containers.length - 1
@@ -2951,65 +3319,9 @@ export default function MixedPlanner({
             </table>
           </section>
         ))}
-        <section className="report-section report-principles">
-          <h2>
-            <span>{String(result.containers.length + 2).padStart(2, "0")}</span>
-            {tr("现场执行原则与复核", "EXECUTION RULES & VERIFICATION")}
-          </h2>
-          <ol>
-            <li>
-              {tr(
-                "每款纸箱高度始终向上，仅允许底面长宽旋转 90°；任何纸箱或托盘不得重叠、挤压或缩小规定间隙。",
-                "Keep every carton upright. Only 90° base rotation is permitted. Cartons and pallets must never overlap, compress or reduce the specified clearance.",
-              )}
-            </li>
-            <li>
-              {tr(
-                "包装方式以报告为准：纸箱 SKU 直接装柜；托盘 SKU 必须先按报告计算的每托箱数、纸箱层数和托盘总高完成组托，再整托装柜。",
-                "Follow the reported packaging method: load carton SKUs directly; palletized SKUs must first be built to the calculated cartons per pallet, carton layers and loaded pallet height, then loaded as complete pallet units.",
-              )}
-            </li>
-            <li>
-              {tr(
-                "托盘纸箱不得超出托盘有效承载面；平底托盘仅在报告标明时允许上下双层。每个下层托盘顶面必须满层、平整并经承载确认；未满层末托只能置于上层，或使用同尺寸兼容纸箱/经批准的刚性补平材料形成连续承压面。",
-                "Cartons must remain inside the pallet loading surface. Double stacking of flat-bottom pallets is allowed only where shown. Every lower pallet must have a complete, level and load-approved top; an incomplete final pallet must remain top-only or be levelled with compatible same-size cartons or approved rigid material to form a continuous bearing surface.",
-              )}
-            </li>
-            <li>
-              {tr(
-                "按报告的柜号与分区顺序，从箱头向箱门装载；完成一个 SKU 分区并核对托盘数、箱数和产品数量后再进入下一分区。",
-                "Load from front to door by container and zone sequence. Verify pallets, cartons and product quantity for each SKU before moving to the next zone.",
-              )}
-            </li>
-            <li>
-              {tr(
-                "尾箱仍按完整外箱尺寸占用一个装载位；用合规缓冲材料填实内部空隙，封箱并标注实际 EA，固定在该 SKU 区末最上层，禁止挤压或在其上堆放满箱。使用更小的专用尾箱时，须作为独立外箱尺寸重新计算，不得现场临时替换。",
-                "A partial final carton occupies one full-size position. Fill its void with approved dunnage, seal it, mark the actual EA and secure it on top at the zone end; never compress it or stack full cartons above. A smaller dedicated partial carton must be entered as a separate size and recalculated, never substituted on site.",
-              )}
-            </li>
-            <li>
-              {tr(
-                "单一水平方向空隙合计不得超过 150 mm；超过时须按本报告警示补货或采用经批准的挡木、填充、支撑/系固方案并签字后封柜。图中红色斜纹为柜门禁放区，任何包装不得越过有效装载边界。",
-                "Total void in any horizontal direction must not exceed 150 mm. Where exceeded, add planned cargo or use approved blocking, filling, bracing/securing and obtain sign-off before closing. The red hatched strip is the door no-load zone; no package may cross the effective loading boundary.",
-              )}
-            </li>
-            <li>
-              {tr(
-                `执行前复核实测柜内尺寸和门洞（参考 ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm）、门框角柱、总载重、重心、托盘承载、纸箱抗压和装卸顺序。`,
-                `Before execution, verify measured internal dimensions and door opening (reference ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm), door frame, corner posts, payload, centre of gravity, pallet capacity, carton compression strength and unloading order.`,
-              )}
-            </li>
-            <li>
-              {tr(
-                "本报告自动采用通过边界、间隙与高度校验的最紧凑装载方案；默认禁止不同 SKU 上下混堆。本报告不替代承重与现场安全校核。",
-                "This report automatically uses the most compact layout that passes boundary, clearance and height checks. Vertical stacking between different SKUs is prohibited by default. This report does not replace load-bearing or site safety checks.",
-              )}
-            </li>
-          </ol>
-        </section>
         <section className="report-section report-execution-record">
           <h2>
-            <span>{String(result.containers.length + 3).padStart(2, "0")}</span>
+            <span>{String(result.containers.length + 2).padStart(2, "0")}</span>
             {tr("装柜复核与签核记录", "LOADING VERIFICATION & SIGN-OFF RECORD")}
           </h2>
           <div className="report-execution-fields">

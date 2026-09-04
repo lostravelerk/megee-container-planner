@@ -38,7 +38,7 @@ test("keeps the v3 product boundary and saved-plan controls explicit", async () 
   const shell = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
   const planner = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
   const types = await readFile(new URL("../app/plannerTypes.ts", import.meta.url), "utf8");
-  assert.match(shell, /APP_VERSION = "3\.1\.1"/);
+  assert.match(shell, /APP_VERSION = "3\.3\.0"/);
   assert.match(shell, /ALGORITHM_VERSION = "MIX 2\.1"/);
   assert.match(shell, /PLAN_STORAGE_KEY = "megee-container-saved-plans-v3"/);
   assert.match(shell, /column-filter-button/);
@@ -69,12 +69,28 @@ test("keeps direct carton, pallet and procurement optimization auditable", async
   assert.match(planner, /LONGITUDINAL HEIGHT ENVELOPE/);
   assert.match(planner, /END VIEW/);
   assert.match(planner, /PALLET CARTON PATTERNS/);
-  assert.match(planner, /DATA, QUANTITY & GEOMETRY: PASS/);
+  assert.match(planner, /CALCULATION, QUANTITY CONSERVATION & GEOMETRY: PASS/);
   assert.match(planner, /Packing List totals do not match the loading result/);
   assert.match(algorithm, /optimizeProcurementQuantities/);
   assert.match(algorithm, /validateMixedPlan\(result\)/);
   assert.match(algorithm, /quantityRule === "kit"/);
   assert.match(algorithm, /result\.unplanned\.length === 0/);
+});
+
+test("uses a real interactive 3D loading scene while retaining printable engineering views", async () => {
+  const planner = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
+  const scene = await readFile(new URL("../app/LoadingScene3D.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(planner, /lazy\(\(\) => import\("\.\/LoadingScene3D"\)\)/);
+  assert.match(planner, /展开工程校核三视图/);
+  assert.match(scene, /WebGLRenderer/);
+  assert.match(scene, /OrbitControls/);
+  assert.match(scene, /addPlasticPallet/);
+  assert.match(scene, /physical carton dimensions/);
+  assert.match(styles, /\.loading-scene-stage/);
+  assert.match(styles, /\.loading-scene-3d\s*\{\s*display:\s*none !important/);
+  assert.match(styles, /\.report-engineering-checks\s*\{\s*display:\s*none !important/);
+  assert.match(styles, /\.print-only-engineering\s*\{\s*display:\s*block !important/);
 });
 
 test("uses the compact official MEGEE COSPACK vector mark without a bitmap asset", async () => {
@@ -100,7 +116,7 @@ test("keeps formal PDF pagination rules explicit", async () => {
   assert.match(styles, /packing-list-section tr\s*{[^}]*break-inside:\s*avoid-page/);
   assert.match(styles, /body\.print-packing-list \.print-report:not\(\.packing-list-print\)/);
   assert.match(styles, /report-execution-record[^}]*min-height:\s*246mm/);
-  assert.match(styles, /report-execution-record[^}]*break-before:\s*page/);
+  assert.match(styles, /report-execution-record[^}]*break-inside:\s*avoid-page/);
   assert.match(styles, /report-execution-notes[^}]*min-height:\s*78mm/);
   assert.match(styles, /html-report-toolbar[^}]*display:\s*none !important/);
 });
