@@ -83,6 +83,7 @@ test("maximizes equal-EA component kits through the audited loading geometry", (
     [144, 229],
   );
   assert.equal(result.result.items[1].productQuantity % result.result.items[1].eaPerBox, 360);
+  assert.equal(result.residualCapacityVerified, true);
   assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
 
   const overflow = planMixedContainerOptions([
@@ -148,6 +149,7 @@ test("optimizes fixed, adjustable and equal-EA kit quantities through physical l
   assert.ok(result.quantities.ADJUST >= 100 && result.quantities.ADJUST <= 1000);
   assert.equal(result.quantities["KIT-A"], result.quantities["KIT-B"]);
   assert.ok(result.quantities["KIT-A"] >= 100 && result.quantities["KIT-A"] <= 1000);
+  assert.equal(result.residualCapacityVerified, true);
   assert.equal(result.result.containers.length, 1);
   assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
   assert.ok(result.candidates.length > 0);
@@ -268,6 +270,31 @@ test("interlocks unused SKU boundary contours without overlapping physical carto
   assert.equal(optimized.plannedEa, strict.plannedEa);
   assert.deepEqual(validateMixedPlan(optimized), { ok: true, errors: [] });
   assertValidGeometry(optimized);
+});
+
+test("uses entered EA/BOX, compacts mixed SKUs from the closed end and keeps the tail carton at the door-side extremity", () => {
+  const result = planMixedContainers([
+    item("X40401", 138_000, 1000, { l: 500, w: 400, h: 260 }),
+    item("X40402", 138_000, 630, { l: 480, w: 380, h: 390 }),
+  ], { l: 5898, w: 2352, h: 2393, doorW: 2340, doorH: 2292 }, {
+    cartonTolerance: 3,
+    cartonGap: 5,
+    skuGap: 30,
+    doorClearance: 80,
+    sideClearance: 30,
+    topClearance: 50,
+    allowSkuInterlock: true,
+  });
+  const plan = result.containers[0];
+  const cap = result.items.find((entry) => entry.id === "X40402");
+  const tail = plan.positions.find((position) => position.partialCartonEa);
+  assert.equal(cap.eaPerBox, 630);
+  assert.equal(cap.requiredBoxes, 220);
+  assert.equal(tail.partialCartonEa, 30);
+  assert.equal(tail.x + tail.w, plan.usedLength);
+  assert.ok(plan.maximumInternalVoid <= result.config.skuGap + 0.001);
+  assert.deepEqual(validateMixedPlan(result), { ok: true, errors: [] });
+  assertValidGeometry(result);
 });
 
 test("mixes 0 and 90 degree floor orientations inside one SKU zone to reduce occupied length", () => {

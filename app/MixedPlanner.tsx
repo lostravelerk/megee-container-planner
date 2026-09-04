@@ -17,6 +17,7 @@ import type {
   PlanningMode,
   SavedPlanRecord,
 } from "./plannerTypes";
+import type { LoadingSceneSnapshots } from "./LoadingScene3D";
 
 type MixedRow = PlannerRow;
 type SharedPlanPayload = {
@@ -76,6 +77,15 @@ function formatNumber(value: number, digits = 0) {
   });
 }
 
+function useDebouncedValue<T>(value: T, delay = 180) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [delay, value]);
+  return debounced;
+}
+
 function shortFingerprint(value: string) {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
@@ -83,6 +93,13 @@ function shortFingerprint(value: string) {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(36).toUpperCase().padStart(7, "0").slice(-7);
+}
+
+function loadingSceneKey(
+  containerType: string,
+  plan: { index: number; totalBoxes: number; totalEa: number; usedLength: number },
+) {
+  return `${containerType}-${plan.index}-${plan.totalBoxes}-${plan.totalEa}-${Math.round(plan.usedLength * 100)}`;
 }
 
 function ReportBrand({ className = "" }: { className?: string }) {
@@ -1136,6 +1153,24 @@ export default function MixedPlanner({
   const [shareLoadState, setShareLoadState] = useState<
     "idle" | "loading" | "protected" | "loaded" | "error"
   >(initialShareId ? "loading" : "idle");
+  const [sceneSnapshots, setSceneSnapshots] = useState<Record<string, LoadingSceneSnapshots>>({});
+  const storeSceneSnapshots = useCallback((key: string, snapshots: LoadingSceneSnapshots) => {
+    setSceneSnapshots((current) => {
+      const existing = current[key];
+      if (
+        existing?.perspective === snapshots.perspective
+        && existing.top === snapshots.top
+        && existing.side === snapshots.side
+        && existing.door === snapshots.door
+      ) return current;
+      return { ...current, [key]: snapshots };
+    });
+  }, []);
+  // Controlled inputs update immediately.  Geometry and procurement searches
+  // run only after the operator pauses briefly, avoiding a full optimizer pass
+  // for every digit or IME composition event.
+  const calculationRows = useDebouncedValue(rows, 220);
+  const calculationsPending = calculationRows !== rows;
 
   const applySharedPayload = useCallback((payload: SharedPlanPayload) => {
     const sharedRows = payload.rows.map((row, index) => ({
@@ -1204,7 +1239,7 @@ export default function MixedPlanner({
 
   const baseItems = useMemo(
     () =>
-      rows.flatMap((row) => {
+      calculationRows.flatMap((row) => {
         const required = [
           row.eaPerBox,
           row.l,
@@ -1245,7 +1280,7 @@ export default function MixedPlanner({
           },
         ];
       }),
-    [rows, planningMode],
+    [calculationRows, planningMode],
   );
   const container = containers[containerType];
   const loadingConfig = useMemo(
@@ -1278,12 +1313,12 @@ export default function MixedPlanner({
   );
   const orderItems = useMemo(
     () => baseItems.flatMap((item) => {
-      const row = rows.find((candidate) => candidate.id === item.id);
+      const row = calculationRows.find((candidate) => candidate.id === item.id);
       if (!row || row.productQuantity === "" || Number(row.productQuantity) <= 0)
         return [];
       return [{ ...item, productQuantity: Number(row.productQuantity) }];
     }),
-    [baseItems, rows],
+    [baseItems, calculationRows],
   );
   const capacityPlan = useMemo(
     () => planningMode === "capacity"
@@ -1336,7 +1371,7 @@ export default function MixedPlanner({
   );
   const incompleteRows = useMemo(
     () =>
-      rows.filter((row) => {
+      calculationRows.filter((row) => {
         const started = Boolean(
           row.series ||
           row.code ||
@@ -1347,7 +1382,7 @@ export default function MixedPlanner({
         const completeItems = planningMode === "capacity" ? baseItems : orderItems;
         return started && !completeItems.some((item) => item.id === row.id);
       }),
-    [rows, planningMode, baseItems, orderItems],
+    [calculationRows, planningMode, baseItems, orderItems],
   );
   const preflight = useMemo(() => validateMixedPlan(result), [result]);
   const capacityConstraintErrors = useMemo(() => {
@@ -1355,7 +1390,7 @@ export default function MixedPlanner({
       return [];
     const errors: string[] = [];
     const kitGroups = new Map<string, Array<{ code: string; quantity: number }>>();
-    rows.forEach((row) => {
+    calculationRows.forEach((row) => {
       const quantity = Number(capacityPlan.quantities[row.id] || 0);
       if (!quantity) return;
       if (row.quantityRule === "fixed" && quantity !== Number(row.productQuantity))
@@ -1398,8 +1433,9 @@ export default function MixedPlanner({
         ),
       );
     return errors;
-  }, [planningMode, capacityPlan, rows, result.containers.length, containerCount, tr]);
+  }, [planningMode, capacityPlan, calculationRows, result.containers.length, containerCount, tr]);
   const reportReady =
+    !calculationsPending &&
     validItems.length > 0 &&
     incompleteRows.length === 0 &&
     preflight.ok &&
@@ -1586,9 +1622,25 @@ export default function MixedPlanner({
     window.print();
     window.setTimeout(cleanup, 60_000);
   };
+  const waitForPrintableAssets = async (report: HTMLElement | null) => {
+    if (!report) return;
+    if (document.fonts?.ready) await document.fonts.ready;
+    const images = [...report.querySelectorAll<HTMLImageElement>("img")];
+    await Promise.all(images.map(async (image) => {
+      if (image.complete && image.naturalWidth > 0) return;
+      try {
+        await image.decode();
+      } catch {
+        // Structural preflight below reports any missing generated view.
+      }
+    }));
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+  };
   const printReport = async () => {
     if (!reportReady) {
-      const detail = incompleteRows.length
+      const detail = calculationsPending
+        ? tr("输入已更新，正在完成计算与几何复核。", "Input updated; calculation and geometry verification are still running.")
+        : incompleteRows.length
         ? tr(
             `${incompleteRows.length} 行已开始但字段未完整。`,
             `${incompleteRows.length} started row(s) are incomplete.`,
@@ -1599,6 +1651,19 @@ export default function MixedPlanner({
           tr("请先完成有效产品数据。", "Complete valid product data first.");
       setPrintError(detail);
       return;
+    }
+    if (!htmlReportOpen) {
+      setPrintError(tr("正在生成正式三视图，请稍候…", "Generating formal standard views…"));
+      setHtmlReportOpen(true);
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+    }
+    const expectedSnapshotCount = result.containers.length * 4;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      const snapshotCount = document.querySelectorAll(
+        ".mixed-print-report .report-scene-snapshot[data-view] img[src^='data:image/']",
+      ).length;
+      if (snapshotCount >= expectedSnapshotCount) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
     }
     const report = document.querySelector<HTMLElement>(".mixed-print-report");
     const identityRows =
@@ -1661,15 +1726,14 @@ export default function MixedPlanner({
       const allocationRows = section.querySelectorAll(
         ".mixed-report-allocation tbody tr",
       ).length;
-      if (
-        !section.querySelector(".mixed-plan-frame") ||
-        !section.querySelector(".mixed-side-view") ||
-        !section.querySelector(".mixed-end-view")
-      )
+      const standardViews = section.querySelectorAll(
+        ".report-scene-snapshot[data-view] img[src^='data:image/']",
+      ).length;
+      if (standardViews < 4)
         structureErrors.push(
           tr(
-            `第 ${index + 1} 柜缺少俯视、纵向侧视或横向端视图。`,
-            `Container ${index + 1} is missing its top, longitudinal side or transverse end view.`,
+            `第 ${index + 1} 柜缺少实景、俯视、纵向侧视或门侧正视图。`,
+            `Container ${index + 1} is missing a perspective, top, longitudinal or door-end view.`,
           ),
         );
       if (allocationRows !== expectedBlocks)
@@ -1691,6 +1755,7 @@ export default function MixedPlanner({
       setPrintError(structureErrors[0]);
       return;
     }
+    await waitForPrintableAssets(report);
     setPrintError("");
     runPrintMode("print-loading-report");
   };
@@ -1765,6 +1830,7 @@ export default function MixedPlanner({
       setPrintError(structureErrors[0]);
       return;
     }
+    await waitForPrintableAssets(report);
     setPrintError("");
     runPrintMode("print-packing-list");
   };
@@ -2037,13 +2103,17 @@ export default function MixedPlanner({
             </select>
           </label>
           <div
-            className="mixed-config-status"
+            className={`mixed-config-status${calculationsPending ? " is-calculating" : ""}`}
             title={tr(
               "外箱高度向上；底面允许旋转 90°；自动检查边界、间隙与重叠；尾箱置顶且禁止受压。",
               "Cartons stay upright; base rotation by 90° is allowed; boundaries, clearances and overlaps are audited; partial cartons stay on top without compression.",
             )}
           >
-            <span>{tr("安全规则已启用：向上 · 可旋转 · 防重叠 · 尾箱禁压", "Safety rules active: upright · rotation · no overlap · partial carton protected")}</span>
+            <span>
+              {calculationsPending
+                ? tr("输入已更新，正在复核最优排布…", "Input updated; verifying the optimal layout…")
+                : tr("安全规则已启用：向上 · 可旋转 · 防重叠 · 尾箱门端优先", "Safety rules active: upright · rotation · no overlap · partial carton door-side priority")}
+            </span>
           </div>
           <details className="mixed-advanced-config">
             <summary>
@@ -2478,8 +2548,8 @@ export default function MixedPlanner({
               <p>
                 {capacityPlan && !capacityPlan.error
                   ? tr(
-                      `${validItems.length} 个 SKU、组件合计 ${formatNumber(result.totalDemandEa)} EA、${formatNumber(result.totalRequiredBoxes)} 箱；已评估 ${capacityPlan.evaluations} 个实际排布候选并通过完整几何复核。`,
-                      `${validItems.length} SKUs, ${formatNumber(result.totalDemandEa)} component EA and ${formatNumber(result.totalRequiredBoxes)} cartons; ${capacityPlan.evaluations} physical candidates evaluated and the selected mix passed the full geometry audit.`,
+                      `${validItems.length} 个 SKU、组件合计 ${formatNumber(result.totalDemandEa)} EA、${formatNumber(result.totalRequiredBoxes)} 箱；已评估 ${capacityPlan.evaluations} 个实际排布候选，通过完整几何复核${capacityPlan.residualCapacityVerified ? "，并确认允许调整的产品组均不能再增加 1 EA" : ""}。`,
+                      `${validItems.length} SKUs, ${formatNumber(result.totalDemandEa)} component EA and ${formatNumber(result.totalRequiredBoxes)} cartons; ${capacityPlan.evaluations} physical candidates were evaluated and the selected mix passed the full geometry audit${capacityPlan.residualCapacityVerified ? "; no permitted decision group can accept one additional EA" : ""}.`,
                     )
                   : tr(
                       `当前约束没有可执行方案：${capacityPlan?.error || "请检查数据"}`,
@@ -2604,8 +2674,8 @@ export default function MixedPlanner({
               </span>
               <strong>
                 {tr("纵向", "Length")} {formatNumber(selectedPlan.lengthUse, 1)}
-                % · {tr("余", "Free")}{" "}
-                {formatNumber(selectedPlan.remainingLength)} mm
+                % · {tr("中段最大间隙", "Max internal gap")} {formatNumber(selectedPlan.maximumInternalVoid)} mm
+                · {tr("门端通道余量", "Door-lane free")} {formatNumber(selectedPlan.maximumRowEndVoid)} mm
               </strong>
             </div>
             {selectedPlan.incompletePalletTops ? (
@@ -2684,8 +2754,13 @@ export default function MixedPlanner({
                   container={container}
                   sideClearance={sideClearance}
                   doorClearance={doorClearance}
+                  topClearance={topClearance}
+                  doorWidth={result.config.doorWidth}
+                  doorHeight={result.config.doorHeight}
                   language={language}
                   visiblePositionCount={playbackVisible}
+                  snapshotId={loadingSceneKey(containerType, selectedPlan)}
+                  onSnapshots={(snapshots) => storeSceneSnapshots(loadingSceneKey(containerType, selectedPlan), snapshots)}
                 />
               </Suspense>
             ) : null}
@@ -2727,7 +2802,7 @@ export default function MixedPlanner({
                     <th>{tr("CBM 材积", "Packaging CBM")}</th>
                     <th>{tr("尾箱数量", "Last-carton quantity")}</th>
                     <th>{tr("自动堆叠", "Calculated stack")}</th>
-                    <th>{tr("纵向分区", "Longitudinal zone")}</th>
+                    <th>{tr("坐标范围（可交错）", "Coordinate envelope")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2762,8 +2837,8 @@ export default function MixedPlanner({
                       <td>
                         {block.partialCartonEa
                           ? tr(
-                              `${block.partialCartonEa} EA · 最后装载位`,
-                              `${block.partialCartonEa} EA · LAST POSITION`,
+                              `${block.partialCartonEa} EA · 门端最后装载位`,
+                              `${block.partialCartonEa} EA · FINAL DOOR-SIDE POSITION`,
                             )
                           : tr("0 EA · 无尾箱", "0 EA · NONE")}
                       </td>
@@ -3121,14 +3196,24 @@ export default function MixedPlanner({
             </li>
             <li>
               {tr(
-                "按报告的柜号与分区顺序，从箱头向箱门装载；完成一个 SKU 分区并核对托盘数、箱数和产品数量后再进入下一分区。",
-                "Load from front to door by container and zone sequence. Verify pallets, cartons and product quantity for each SKU before moving to the next zone.",
+                "按报告坐标从箱头向箱门连续装载。不同 SKU 可在分界处交错补位，但必须按图设置纸板或 PE 膜隔离，并逐区核对 SKU、托盘数、箱数和产品数量；不得形成未标识的混料。",
+                "Load continuously from the closed end toward the doors using the reported coordinates. Different SKUs may interlock at a boundary, but must be separated with cardboard or PE film and verified by SKU, pallet, carton and EA count; unmarked mixing is prohibited.",
               )}
             </li>
             <li>
               {tr(
-                "尾箱仍按完整外箱尺寸占用一个装载位；用合规缓冲材料填实内部空隙，封箱并标注实际 EA，固定在该 SKU 区末最上层，禁止挤压或在其上堆放满箱。使用更小的专用尾箱时，须作为独立外箱尺寸重新计算，不得现场临时替换。",
-                "A partial final carton occupies one full-size position. Fill its void with approved dunnage, seal it, mark the actual EA and secure it on top at the zone end; never compress it or stack full cartons above. A smaller dedicated partial carton must be entered as a separate size and recalculated, never substituted on site.",
+                planningMode === "capacity"
+                  ? "按柜容反算时，系统在固定、可调和齐套约束内持续增加采购数量，直至任何允许增加的产品组再增加 1 EA 均无法通过整箱占位与几何校核；最终不可用余量归并在柜门内。"
+                  : "按订单量规划时，系统不得虚增订单箱数；现有纸箱先通过多 SKU 交错压实箱头和中段，真实剩余空间统一归并在柜门内，并按报告要求挡固、填充或系固。",
+                planningMode === "capacity"
+                  ? "In capacity mode, quantities are increased within fixed, adjustable and kit constraints until adding 1 EA to any permitted decision group can no longer pass full-carton occupancy and geometry checks; final unusable space is consolidated inside the door end."
+                  : "In order mode, the planner must not invent cartons. Existing cartons are compacted from the closed end with controlled multi-SKU interlocking, and genuine residual space is consolidated inside the door end for blocking, filling or securing as specified.",
+              )}
+            </li>
+            <li>
+              {tr(
+                "尾箱仍按完整外箱尺寸占用一个装载位；用合规缓冲材料填实，使用红色胶带封口并醒目标注产品代码、品名和实际 EA，优先固定在靠柜门的最后可访问货位最上层，禁止挤压或在其上堆放满箱。更小专用尾箱须按独立尺寸重新计算。",
+                "A partial carton occupies one full-size position. Fill it with approved dunnage, seal it with red tape, clearly mark code, product and actual EA, and secure it on top at the last accessible position nearest the doors. Never compress it or place full cartons above it. Recalculate any smaller dedicated partial carton as a separate size.",
               )}
             </li>
             <li>
@@ -3139,8 +3224,8 @@ export default function MixedPlanner({
             </li>
             <li>
               {tr(
-                `执行前复核实测柜内尺寸和门洞（参考 ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm）、门框角柱、总载重、重心、托盘承载、纸箱抗压和装卸顺序。`,
-                `Before execution, verify measured internal dimensions and door opening (reference ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm), door frame, corner posts, payload, centre of gravity, pallet capacity, carton compression strength and unloading order.`,
+                `本方案以用户输入的外箱或组托后实际最大外廓尺寸为计算依据。执行前必须逐项复测，任何鼓包、倾斜、缠膜、护角或制造公差均不得使实物超过输入尺寸及报告公差；同时复核柜内尺寸和门洞（参考 ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm）、总载重、重心、托盘承载、纸箱抗压和装卸顺序。`,
+                `This plan uses the entered maximum as-loaded carton or pallet envelope. Remeasure every item before execution: bulging, lean, wrap, corner boards and manufacturing variation must not exceed the entered dimensions and reported tolerance. Also verify the container interior and door opening (reference ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm), payload, centre of gravity, pallet capacity, carton compression and handling sequence.`,
               )}
             </li>
             <li>
@@ -3178,7 +3263,8 @@ export default function MixedPlanner({
               </span>
               <span>
                 {tr("纵向占用", "LENGTH USE")} {formatNumber(plan.lengthUse, 1)}
-                % · {tr("净余", "FREE")} {formatNumber(plan.remainingLength)} mm
+                % · {tr("中段最大间隙", "MAX INTERNAL GAP")} {formatNumber(plan.maximumInternalVoid)} mm
+                · {tr("门端通道余量", "DOOR-LANE FREE")} {formatNumber(plan.maximumRowEndVoid)} mm
               </span>
             </div>
             {plan.requiresSecuring ? (
@@ -3216,9 +3302,48 @@ export default function MixedPlanner({
                   container={container}
                   sideClearance={sideClearance}
                   doorClearance={doorClearance}
+                  topClearance={topClearance}
+                  doorWidth={result.config.doorWidth}
+                  doorHeight={result.config.doorHeight}
                   language={language}
+                  eager
+                  snapshotId={loadingSceneKey(containerType, plan)}
+                  onSnapshots={(snapshots) => storeSceneSnapshots(loadingSceneKey(containerType, plan), snapshots)}
                 />
               </Suspense>
+            ) : null}
+            {sceneSnapshots[loadingSceneKey(containerType, plan)] ? (
+              <section className="report-scene-snapshots" aria-label={tr("实景装柜标准视图", "Realistic standard loading views")}>
+                {([
+                  ["perspective", tr("三维实景", "PERSPECTIVE")],
+                  ["top", tr("俯视图", "TOP VIEW")],
+                  ["side", tr("纵向侧视图", "LONGITUDINAL VIEW")],
+                  ["door", tr("门侧正视图", "DOOR-END VIEW")],
+                ] as const).map(([view, label]) => (
+                  <figure className={`report-scene-snapshot report-scene-${view}`} data-view={view} key={view}>
+                    {/* Data-URL evidence plates are generated from the audited WebGL scene and cannot use an image optimizer. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={sceneSnapshots[loadingSceneKey(containerType, plan)][view]}
+                      alt={`${containerType} · ${label}`}
+                    />
+                    <figcaption>
+                      <b>{label}</b>
+                      <span>
+                        {view === "top"
+                          ? `${formatNumber(container.l - doorClearance)} × ${formatNumber(container.w - sideClearance * 2)} mm`
+                          : view === "door"
+                            ? `${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm`
+                            : view === "side"
+                              ? `${formatNumber(container.l - doorClearance)} × ${formatNumber(container.h - topClearance)} mm`
+                              : tr("同一几何数据源生成", "Generated from the same geometry source")}
+                      </span>
+                    </figcaption>
+                  </figure>
+                ))}
+              </section>
+            ) : htmlReportOpen ? (
+              <div className="report-scene-snapshot-pending">{tr("正在生成正式报告三视图…", "Generating formal-report standard views…")}</div>
             ) : null}
             <details className="engineering-checks report-engineering-checks">
               <summary>
@@ -3268,7 +3393,7 @@ export default function MixedPlanner({
                   <th>CBM</th>
                   <th>{tr("尾箱", "Partial carton")}</th>
                   <th>{tr("堆叠 / 方向", "Stack / orientation")}</th>
-                  <th>{tr("纵向分区", "Zone")}</th>
+                  <th>{tr("坐标范围（可交错）", "Coordinate envelope")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -3291,8 +3416,8 @@ export default function MixedPlanner({
                     <td>
                       {block.partialCartonEa
                         ? tr(
-                            `${block.partialCartonEa} EA · 区末`,
-                            `${block.partialCartonEa} EA · ZONE END`,
+                            `${block.partialCartonEa} EA · 门端优先`,
+                            `${block.partialCartonEa} EA · DOOR-SIDE PRIORITY`,
                           )
                         : "—"}
                     </td>
@@ -3346,8 +3471,9 @@ export default function MixedPlanner({
           <span>{tr(`□ 柜内与门洞尺寸已复测（参考 ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm）`, `□ Container and door opening remeasured (reference ${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm)`)}</span>
           <span>{tr("□ SKU、BOX、EA 与订单装柜清单一致", "□ SKUs, BOX and EA agree with the order loading list")}</span>
           <span>{tr("□ 托盘边界、层数、总高、顶面平整与缠膜余量已复核", "□ Pallet boundary, layers, loaded height, level top and wrap allowance verified")}</span>
-          <span>{tr("□ 尾箱已填充、封签、标注 EA 并置于区末最上层", "□ Partial cartons filled, sealed, EA-marked and secured on top at zone end")}</span>
-          <span>{tr("□ 空隙挡固、填充、支撑/系固方案已落实", "□ Void blocking, filling, bracing/securing plan implemented")}</span>
+          <span>{tr("□ SKU 交错边界已用纸板或 PE 膜隔离并按图标识", "□ Interlocked SKU boundaries separated with cardboard or PE film and marked to plan")}</span>
+          <span>{tr("□ 尾箱已填充、红色胶带封口、标注产品与 EA，并置于门端最后可访问位", "□ Partial cartons filled, red-tape sealed, product/EA marked and placed at the final door-side accessible position")}</span>
+          <span>{tr("□ 仅门端保留最终余量，挡固、填充、支撑/系固方案已落实", "□ Final residual void retained only at the door end and blocking/filling/bracing completed")}</span>
           <span>{tr("□ 总载重、轴载、重心与纸箱抗压已由责任人员确认", "□ Payload, axle load, centre of gravity and carton compression approved")}</span>
           <span>{tr("□ 柜号、封条号与现场照片已归档", "□ Container number, seal number and loading photos archived")}</span>
           </div>
@@ -3617,7 +3743,7 @@ export default function MixedPlanner({
                 <th>PLT</th>
                 <th>{tr("尾箱 EA", "Partial EA")}</th>
                 <th>CBM</th>
-                <th>{tr("装载区 mm", "Loading Zone mm")}</th>
+                <th>{tr("坐标范围 mm（可交错）", "Coordinate envelope mm")}</th>
               </tr>
             </thead>
             <tbody>
@@ -3666,6 +3792,16 @@ export default function MixedPlanner({
               </tr>
             </tfoot>
           </table>
+        </section>
+
+        <section className="packing-list-control" aria-label={tr("包装与装柜放行记录", "Packing and loading release record")}>
+          <h2>{tr("包装与装柜放行记录", "PACKING & LOADING RELEASE")}</h2>
+          <div>
+            <span>{tr("□ 外箱 / 组托后最大外廓实测不超过本单尺寸", "□ Measured carton / palletized envelope does not exceed this list")}</span>
+            <span>{tr("□ SKU、箱数、EA、尾箱标识与分柜明细一致", "□ SKU, CTN, EA and partial-carton marks match the allocation")}</span>
+            <span>{tr("□ 混装边界已用纸板或 PE 膜隔离并标识", "□ Mixed-SKU boundaries are separated and identified")}</span>
+            <span>{tr("□ 柜门端余量已按批准方案挡固 / 填充 / 系固", "□ Door-end residual space is blocked / filled / secured as approved")}</span>
+          </div>
         </section>
 
         <section className="packing-list-notes">

@@ -45,16 +45,29 @@ type ScenePosition = {
   stackBoxes: number;
   skuId: string;
   palletLoads?: PalletLoad[];
+  partialCartonEa?: number;
+  partialOnTop?: boolean;
 };
 
 type SceneBlock = {
   item: SceneItem;
   loadedBoxes: number;
+  startX?: number;
+  length?: number;
+  interlockedWithPrevious?: boolean;
 };
 
 type MixedContainerPlan = {
+  index?: number;
   positions: ScenePosition[];
   blocks: SceneBlock[];
+};
+
+export type LoadingSceneSnapshots = {
+  perspective: string;
+  top: string;
+  side: string;
+  door: string;
 };
 
 const SCENE_COLORS = [
@@ -73,17 +86,28 @@ type SceneProps = {
   container: Dimensions;
   sideClearance: number;
   doorClearance: number;
+  topClearance?: number;
+  doorWidth?: number;
+  doorHeight?: number;
   language: Language;
   visiblePositionCount?: number;
+  eager?: boolean;
+  snapshotId?: string;
+  onSnapshots?: (snapshots: LoadingSceneSnapshots) => void;
 };
 
 type SceneRuntime = {
+  scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
   renderer: THREE.WebGLRenderer;
   cargoGroups: THREE.Group[];
+  nearSideGroup: THREE.Group;
+  roofGroup: THREE.Group;
+  markViewAdjusted: () => void;
   homePosition: THREE.Vector3;
   homeTarget: THREE.Vector3;
+  viewPositions: Record<"perspective" | "top" | "side" | "door", THREE.Vector3>;
 };
 
 function colorWithLightness(source: string, lightnessDelta: number) {
@@ -172,13 +196,96 @@ function addBox(
   size: THREE.Vector3,
   position: THREE.Vector3,
 ) {
-  const mesh = new THREE.Mesh(unitGeometry, materials);
+  // BoxGeometry has six material groups. A one-item array paints only one
+  // group, which makes container walls, doors and pallet rails look like flat
+  // lines. Collapse it to a single material so all physical faces render.
+  const mesh = new THREE.Mesh(
+    unitGeometry,
+    materials.length === 1 ? materials[0] : materials,
+  );
   mesh.position.copy(position);
   mesh.scale.copy(size);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   parent.add(mesh);
   return mesh;
+}
+
+function addDashedBox(parent: THREE.Object3D, size: THREE.Vector3, center: THREE.Vector3, color: string) {
+  const geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z));
+  const material = new THREE.LineDashedMaterial({ color, dashSize: 0.13, gapSize: 0.075, transparent: true, opacity: 0.82 });
+  const lines = new THREE.LineSegments(geometry, material);
+  lines.position.copy(center);
+  lines.computeLineDistances();
+  lines.renderOrder = 8;
+  parent.add(lines);
+  return lines;
+}
+
+function addTailTape(
+  parent: THREE.Object3D,
+  unitGeometry: THREE.BoxGeometry,
+  material: THREE.MeshStandardMaterial,
+  center: THREE.Vector3,
+  size: THREE.Vector3,
+) {
+  const band = Math.max(0.025, Math.min(size.x, size.z) * 0.085);
+  addBox(
+    parent,
+    unitGeometry,
+    [material],
+    new THREE.Vector3(band, 0.012, size.z * 1.012),
+    new THREE.Vector3(center.x, center.y + size.y / 2 + 0.008, center.z),
+  );
+  addBox(
+    parent,
+    unitGeometry,
+    [material],
+    new THREE.Vector3(size.x * 1.012, 0.013, band),
+    new THREE.Vector3(center.x, center.y + size.y / 2 + 0.009, center.z),
+  );
+  addBox(
+    parent,
+    unitGeometry,
+    [material],
+    new THREE.Vector3(0.013, size.y * 1.01, band),
+    new THREE.Vector3(center.x + size.x / 2 + 0.008, center.y, center.z),
+  );
+}
+
+function createTextSprite(
+  text: string,
+  foreground: string,
+  background: string,
+  disposableMaterials: THREE.Material[],
+  disposableTextures: THREE.Texture[],
+) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 768;
+  canvas.height = 192;
+  const context = canvas.getContext("2d");
+  if (context) {
+    context.fillStyle = background;
+    roundedRect(context, 7, 7, 754, 178, 30);
+    context.fill();
+    context.strokeStyle = foreground;
+    context.lineWidth = 9;
+    context.stroke();
+    context.fillStyle = foreground;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.font = "800 64px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    context.fillText(text, 384, 99, 700);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(0.92, 0.23, 1);
+  sprite.renderOrder = 12;
+  disposableMaterials.push(material);
+  disposableTextures.push(texture);
+  return sprite;
 }
 
 function addPlasticPallet(
@@ -233,8 +340,14 @@ export default function LoadingScene3D({
   container,
   sideClearance,
   doorClearance,
+  topClearance = 0,
+  doorWidth,
+  doorHeight,
   language,
   visiblePositionCount,
+  eager = false,
+  snapshotId = "",
+  onSnapshots,
 }: SceneProps) {
   const sectionRef = useRef<HTMLElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -242,15 +355,22 @@ export default function LoadingScene3D({
   const previousVisibleRef = useRef(visiblePositionCount ?? plan.positions.length);
   const visiblePositionCountRef = useRef(visiblePositionCount);
   const [sceneError, setSceneError] = useState("");
-  const [sceneMounted, setSceneMounted] = useState(false);
+  const [sceneMounted, setSceneMounted] = useState(eager);
+  const [activeView, setActiveView] = useState<"perspective" | "top" | "side" | "door">("perspective");
+  const onSnapshotsRef = useRef(onSnapshots);
   const isEnglish = language === "en";
   const orderedPositions = useMemo(
     () => [...plan.positions].sort((left, right) => left.x - right.x || left.y - right.y),
     [plan.positions],
   );
   visiblePositionCountRef.current = visiblePositionCount;
+  onSnapshotsRef.current = onSnapshots;
 
   useEffect(() => {
+    if (eager) {
+      queueMicrotask(() => setSceneMounted(true));
+      return;
+    }
     const section = sectionRef.current;
     if (!section) return;
     if (!("IntersectionObserver" in window)) {
@@ -267,7 +387,7 @@ export default function LoadingScene3D({
     );
     observer.observe(section);
     return () => observer.disconnect();
-  }, []);
+  }, [eager]);
 
   useEffect(() => {
     if (!sceneMounted) return;
@@ -289,6 +409,7 @@ export default function LoadingScene3D({
         canvas,
         antialias: true,
         alpha: false,
+        preserveDrawingBuffer: true,
         powerPreference: "high-performance",
       });
       renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -308,6 +429,12 @@ export default function LoadingScene3D({
         Math.max(width * 3, length * 1.28),
       );
       const homeTarget = new THREE.Vector3(0, height * 0.44, 0);
+      const viewPositions = {
+        perspective: homePosition,
+        top: new THREE.Vector3(0, Math.max(length * 1.45, height * 5), 0.002),
+        side: new THREE.Vector3(0, height * 0.5, Math.max(length * 1.45, width * 4)),
+        door: new THREE.Vector3(length * 0.92, height * 0.5, 0.001),
+      };
       camera.position.copy(homePosition);
       camera.lookAt(homeTarget);
 
@@ -320,12 +447,15 @@ export default function LoadingScene3D({
       controls.panSpeed = 0.45;
       controls.minDistance = Math.max(5, length * 0.72);
       controls.maxDistance = Math.max(18, length * 1.9);
-      controls.minPolarAngle = 0.35;
-      controls.maxPolarAngle = Math.PI * 0.49;
+      controls.minPolarAngle = 0.02;
+      controls.maxPolarAngle = Math.PI * 0.73;
       controls.zoomToCursor = true;
       controls.update();
       let userAdjustedCamera = false;
-      const markCameraAdjusted = () => { userAdjustedCamera = true; };
+      const markCameraAdjusted = () => {
+        userAdjustedCamera = true;
+        setActiveView("perspective");
+      };
       controls.addEventListener("start", markCameraAdjusted);
 
       scene.add(new THREE.HemisphereLight("#ffffff", "#8c9aa4", 2.2));
@@ -367,6 +497,35 @@ export default function LoadingScene3D({
         opacity: 0.28,
         side: THREE.DoubleSide,
       });
+      const cutawayWall = new THREE.MeshPhysicalMaterial({
+        color: "#cfd9df",
+        roughness: 0.45,
+        metalness: 0.28,
+        transparent: true,
+        opacity: 0.11,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const doorMaterial = new THREE.MeshStandardMaterial({
+        color: "#aebbc4",
+        roughness: 0.46,
+        metalness: 0.62,
+        side: THREE.DoubleSide,
+      });
+      const redTapeMaterial = new THREE.MeshStandardMaterial({
+        color: "#d62f2f",
+        roughness: 0.48,
+        metalness: 0.02,
+        emissive: "#5b0505",
+        emissiveIntensity: 0.12,
+      });
+      const separatorMaterial = new THREE.MeshBasicMaterial({
+        color: "#245d86",
+        transparent: true,
+        opacity: 0.17,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
       const floorMaterial = new THREE.MeshStandardMaterial({
         color: "#7d7164",
         roughness: 0.9,
@@ -389,35 +548,53 @@ export default function LoadingScene3D({
         roughness: 0.62,
         metalness: 0.12,
       });
-      disposableMaterials.push(metal, metalDark, wall, roof, floorMaterial, dockMaterial, clearanceMaterial, palletMaterial);
+      disposableMaterials.push(
+        metal, metalDark, wall, roof, cutawayWall, doorMaterial, redTapeMaterial,
+        separatorMaterial, floorMaterial, dockMaterial, clearanceMaterial, palletMaterial,
+      );
 
+      const containerShell = new THREE.Group();
+      const nearSideGroup = new THREE.Group();
+      const roofGroup = new THREE.Group();
+      const doorGroup = new THREE.Group();
+      scene.add(containerShell, nearSideGroup, roofGroup, doorGroup);
       addBox(scene, unitGeometry, [dockMaterial], new THREE.Vector3(length + 4.4, 0.08, width + 5.2), new THREE.Vector3(0.65, -0.18, 0.38));
-      addBox(scene, unitGeometry, [metalDark], new THREE.Vector3(length + 0.12, 0.1, width + 0.12), new THREE.Vector3(0, -0.06, 0));
-      addBox(scene, unitGeometry, [floorMaterial], new THREE.Vector3(length, 0.045, width), new THREE.Vector3(0, 0, 0));
+      addBox(containerShell, unitGeometry, [metalDark], new THREE.Vector3(length + 0.12, 0.1, width + 0.12), new THREE.Vector3(0, -0.06, 0));
+      addBox(containerShell, unitGeometry, [floorMaterial], new THREE.Vector3(length, 0.045, width), new THREE.Vector3(0, 0, 0));
 
       for (let index = 0; index < 18; index += 1) {
         const z = -width / 2 + (index + 0.5) * (width / 18);
-        addBox(scene, unitGeometry, [metalDark], new THREE.Vector3(length, 0.012, 0.012), new THREE.Vector3(0, 0.03, z));
+        addBox(containerShell, unitGeometry, [metalDark], new THREE.Vector3(length, 0.012, 0.012), new THREE.Vector3(0, 0.03, z));
       }
-      addBox(scene, unitGeometry, [wall], new THREE.Vector3(length, height, 0.035), new THREE.Vector3(0, height / 2, -width / 2 - 0.02));
-      addBox(scene, unitGeometry, [wall], new THREE.Vector3(0.04, height, width), new THREE.Vector3(-length / 2 - 0.02, height / 2, 0));
-      addBox(scene, unitGeometry, [roof], new THREE.Vector3(length, 0.035, width), new THREE.Vector3(0, height + 0.02, 0));
+      addBox(containerShell, unitGeometry, [wall], new THREE.Vector3(length, height, 0.035), new THREE.Vector3(0, height / 2, -width / 2 - 0.02));
+      addBox(containerShell, unitGeometry, [wall], new THREE.Vector3(0.04, height, width), new THREE.Vector3(-length / 2 - 0.02, height / 2, 0));
+      addBox(nearSideGroup, unitGeometry, [cutawayWall], new THREE.Vector3(length, height, 0.024), new THREE.Vector3(0, height / 2, width / 2 + 0.018));
+      addBox(roofGroup, unitGeometry, [roof], new THREE.Vector3(length, 0.035, width), new THREE.Vector3(0, height + 0.02, 0));
 
       for (let x = -length / 2 + 0.2; x < length / 2; x += 0.58) {
-        addBox(scene, unitGeometry, [wall], new THREE.Vector3(0.035, height * 0.93, 0.025), new THREE.Vector3(x, height * 0.51, -width / 2 + 0.006));
+        addBox(containerShell, unitGeometry, [metal], new THREE.Vector3(0.035, height * 0.93, 0.026), new THREE.Vector3(x, height * 0.51, -width / 2 + 0.006));
+        addBox(nearSideGroup, unitGeometry, [metal], new THREE.Vector3(0.026, height * 0.93, 0.024), new THREE.Vector3(x, height * 0.51, width / 2 - 0.006));
+      }
+      // ISO-style corrugation and roof bows: dimensions sit outside the stated
+      // clear interior and therefore never reduce the loading calculation.
+      for (let x = -length / 2 + 0.26; x < length / 2; x += 0.42) {
+        addBox(containerShell, unitGeometry, [metal], new THREE.Vector3(0.035, 0.055, width), new THREE.Vector3(x, height + 0.008, 0));
+      }
+      for (let z = -width / 2 + 0.18; z < width / 2; z += 0.31) {
+        addBox(containerShell, unitGeometry, [metal], new THREE.Vector3(0.035, height * 0.9, 0.035), new THREE.Vector3(-length / 2 + 0.004, height * 0.5, z));
       }
       for (const z of [-width / 2, width / 2]) {
         const isNearCutawayEdge = z > 0;
         const railMaterial = isNearCutawayEdge ? metalDark : metal;
         addBox(
-          scene,
+          z > 0 ? nearSideGroup : containerShell,
           unitGeometry,
           [railMaterial],
           new THREE.Vector3(length + 0.15, isNearCutawayEdge ? 0.11 : 0.075, isNearCutawayEdge ? 0.105 : 0.075),
           new THREE.Vector3(0, 0.05, z),
         );
         addBox(
-          scene,
+          z > 0 ? nearSideGroup : containerShell,
           unitGeometry,
           [railMaterial],
           new THREE.Vector3(length + 0.15, isNearCutawayEdge ? 0.12 : 0.085, isNearCutawayEdge ? 0.11 : 0.085),
@@ -426,11 +603,32 @@ export default function LoadingScene3D({
       }
       for (const x of [-length / 2, length / 2]) {
         for (const z of [-width / 2, width / 2]) {
-          addBox(scene, unitGeometry, [metalDark], new THREE.Vector3(0.105, height + 0.16, 0.105), new THREE.Vector3(x, height / 2, z));
+          addBox(containerShell, unitGeometry, [metalDark], new THREE.Vector3(0.105, height + 0.16, 0.105), new THREE.Vector3(x, height / 2, z));
         }
       }
-      addBox(scene, unitGeometry, [metalDark], new THREE.Vector3(0.12, 0.11, width + 0.18), new THREE.Vector3(length / 2, 0.06, 0));
-      addBox(scene, unitGeometry, [metal], new THREE.Vector3(0.1, 0.12, width + 0.18), new THREE.Vector3(length / 2, height, 0));
+      addBox(containerShell, unitGeometry, [metalDark], new THREE.Vector3(0.12, 0.11, width + 0.18), new THREE.Vector3(length / 2, 0.06, 0));
+      addBox(containerShell, unitGeometry, [metal], new THREE.Vector3(0.1, 0.12, width + 0.18), new THREE.Vector3(length / 2, height, 0));
+
+      // Open double doors with inner panels, corrugations, hinges and locking
+      // bars.  They make the loading end unmistakable while keeping the door
+      // opening unobstructed for the dimensional simulation.
+      const addOpenDoor = (z: number, direction: 1 | -1) => {
+        const pivot = new THREE.Group();
+        pivot.position.set(length / 2 + 0.035, 0, z);
+        pivot.rotation.y = direction * Math.PI * 0.5;
+        const leafWidth = width / 2 - 0.045;
+        const localCenterZ = -direction * leafWidth / 2;
+        addBox(pivot, unitGeometry, [doorMaterial], new THREE.Vector3(0.045, height - 0.1, leafWidth), new THREE.Vector3(0, height / 2, localCenterZ));
+        for (let offset = 0.12; offset < leafWidth; offset += 0.29) {
+          addBox(pivot, unitGeometry, [metal], new THREE.Vector3(0.058, height - 0.2, 0.022), new THREE.Vector3(-0.012, height / 2, localCenterZ - leafWidth / 2 + offset));
+        }
+        for (const barOffset of [-0.18, 0.18]) {
+          addBox(pivot, unitGeometry, [metalDark], new THREE.Vector3(0.065, height - 0.22, 0.035), new THREE.Vector3(-0.04, height / 2, localCenterZ + barOffset));
+        }
+        doorGroup.add(pivot);
+      };
+      addOpenDoor(-width / 2, 1);
+      addOpenDoor(width / 2, -1);
       const clearanceLength = Math.min(length, doorClearance / 1000);
       if (clearanceLength > 0.02) {
         addBox(
@@ -441,6 +639,34 @@ export default function LoadingScene3D({
           new THREE.Vector3(length / 2 - clearanceLength / 2, 0.055, 0),
         );
       }
+      const effectiveLength = Math.max(0.01, length - clearanceLength);
+      const effectiveWidth = Math.max(0.01, width - sideClearance * 2 / 1000);
+      const effectiveHeight = Math.max(0.01, height - topClearance / 1000);
+      addDashedBox(
+        scene,
+        new THREE.Vector3(effectiveLength, effectiveHeight, effectiveWidth),
+        new THREE.Vector3(-clearanceLength / 2, effectiveHeight / 2 + 0.018, 0),
+        "#1671c8",
+      );
+
+      plan.blocks.slice(1).forEach((block) => {
+        const boundaryX = Number(block.startX ?? 0) / 1000 - length / 2;
+        const geometry = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(boundaryX, 0.065, -effectiveWidth / 2),
+          new THREE.Vector3(boundaryX, 0.065, effectiveWidth / 2),
+        ]);
+        const material = new THREE.LineDashedMaterial({
+          color: "#245d86",
+          dashSize: 0.1,
+          gapSize: 0.055,
+          transparent: true,
+          opacity: 0.9,
+        });
+        const boundary = new THREE.Line(geometry, material);
+        boundary.computeLineDistances();
+        boundary.renderOrder = 9;
+        scene.add(boundary);
+      });
 
       const materialBundles = plan.blocks.map((block, index) => {
         const bundle = createCartonMaterials(
@@ -462,7 +688,7 @@ export default function LoadingScene3D({
         const floorCenterZ = (position.y + sideClearance) / 1000 - width / 2 + position.h / 2000;
         if (item.packaging === "pallet") {
           const palletLoads = position.palletLoads ?? [];
-          palletLoads.forEach((load) => {
+          palletLoads.forEach((load, loadIndex) => {
             const palletBaseY = (load.level - 1) * item.loadingUnit.h / 1000 + 0.025;
             addPlasticPallet(
               group,
@@ -481,7 +707,7 @@ export default function LoadingScene3D({
             const layerCount = Math.ceil(cartonsLeft / Math.max(1, layerCapacity));
             for (let layer = 0; layer < layerCount; layer += 1) {
               const boxesThisLayer = Math.min(layerCapacity, cartonsLeft);
-              item.palletPlan.positions.slice(0, boxesThisLayer).forEach((cartonPosition) => {
+              item.palletPlan.positions.slice(0, boxesThisLayer).forEach((cartonPosition, cartonIndex) => {
                 const cartonLength = (cartonPosition.rotated ? item.carton.w : item.carton.l) / 1000;
                 const cartonWidth = (cartonPosition.rotated ? item.carton.l : item.carton.w) / 1000;
                 const localX = (cartonPosition.x + (cartonPosition.w / 2) - item.palletPlan.cargoEnvelopeL / 2) / 1000;
@@ -493,13 +719,22 @@ export default function LoadingScene3D({
                 const cartonHeight = item.carton.h / 1000;
                 const layerPitch = item.carton.h / 1000 + Math.max(0, item.loadingUnit.h - item.palletPlan.stackHeight) / 1000;
                 const worldY = palletBaseY + item.pallet.h / 1000 + layer * layerPitch + cartonHeight / 2;
+                const cartonCenter = new THREE.Vector3(worldX, worldY, worldZ);
+                const cartonSize = new THREE.Vector3(worldLength * 0.985, cartonHeight * 0.985, worldWidth * 0.985);
                 addBox(
                   group,
                   unitGeometry,
                   materialBundles[blockIndex].materials,
-                  new THREE.Vector3(worldLength * 0.985, cartonHeight * 0.985, worldWidth * 0.985),
-                  new THREE.Vector3(worldX, worldY, worldZ),
+                  cartonSize,
+                  cartonCenter,
                 );
+                const isTailCarton = Boolean(
+                  position.partialCartonEa
+                    && loadIndex === palletLoads.length - 1
+                    && layer === layerCount - 1
+                    && cartonIndex === boxesThisLayer - 1,
+                );
+                if (isTailCarton) addTailTape(group, unitGeometry, redTapeMaterial, cartonCenter, cartonSize);
               });
               cartonsLeft -= boxesThisLayer;
             }
@@ -510,14 +745,37 @@ export default function LoadingScene3D({
           const actualHeight = item.carton.h / 1000;
           const pitch = item.loadingUnit.h / 1000;
           for (let layer = 0; layer < position.stackBoxes; layer += 1) {
+            const cartonCenter = new THREE.Vector3(
+              floorCenterX,
+              0.025 + layer * pitch + actualHeight / 2,
+              floorCenterZ,
+            );
+            const cartonSize = new THREE.Vector3(actualLength * 0.985, actualHeight * 0.985, actualWidth * 0.985);
             addBox(
               group,
               unitGeometry,
               materialBundles[blockIndex].materials,
-              new THREE.Vector3(actualLength * 0.985, actualHeight * 0.985, actualWidth * 0.985),
-              new THREE.Vector3(floorCenterX, 0.025 + layer * pitch + actualHeight / 2, floorCenterZ),
+              cartonSize,
+              cartonCenter,
             );
+            if (position.partialCartonEa && layer === position.stackBoxes - 1)
+              addTailTape(group, unitGeometry, redTapeMaterial, cartonCenter, cartonSize);
           }
+        }
+        if (position.partialCartonEa) {
+          const label = createTextSprite(
+            `${isEnglish ? "TAIL" : "尾箱"} · ${position.partialCartonEa} EA`,
+            "#a4161a",
+            "rgba(255,247,244,.96)",
+            disposableMaterials,
+            disposableTextures,
+          );
+          label.position.set(
+            floorCenterX,
+            Math.min(height - 0.08, position.stackBoxes * item.loadingUnit.h / 1000 + 0.32),
+            floorCenterZ,
+          );
+          group.add(label);
         }
         group.visible = false;
         group.userData.entryOffset = Math.max(1.2, length * 0.18);
@@ -539,6 +797,9 @@ export default function LoadingScene3D({
           (length * 0.56) / Math.max(0.08, Math.tan(horizontalHalfFov)),
         );
         homePosition.set(length * 0.025, height * 1.1, responsiveDistance);
+        viewPositions.side.set(0, height * 0.5, Math.max(responsiveDistance, length * 1.35));
+        viewPositions.top.set(0, Math.max(responsiveDistance * 1.08, length * 1.45), 0.002);
+        viewPositions.door.set(Math.max(length * 0.92, width * 4.2), height * 0.5, 0.001);
         if (!userAdjustedCamera) {
           camera.position.copy(homePosition);
           camera.lookAt(homeTarget);
@@ -556,6 +817,101 @@ export default function LoadingScene3D({
       );
       intersectionObserver.observe(canvas);
 
+      const captureSnapshots = () => {
+        if (disposed || !onSnapshotsRef.current) return;
+        const originalSize = renderer.getSize(new THREE.Vector2());
+        const originalPixelRatio = renderer.getPixelRatio();
+        const originalVisibility = cargoGroups.map((group) => group.visible);
+        const originalOffsets = cargoGroups.map((group) => group.position.x);
+        const originalFog = scene.fog;
+        const originalNearSideVisibility = nearSideGroup.visible;
+        const originalRoofVisibility = roofGroup.visible;
+        // Orthographic export cameras sit farther away to avoid clipping. Fog
+        // is a screen-depth effect, not part of the dimensional model, so it
+        // must be disabled for crisp evidentiary report plates.
+        scene.fog = null;
+        cargoGroups.forEach((group) => {
+          group.visible = true;
+          group.position.x = 0;
+        });
+        const exportWidth = 1440;
+        const exportHeight = 860;
+        const aspect = exportWidth / exportHeight;
+        renderer.setPixelRatio(1);
+        renderer.setSize(exportWidth, exportHeight, false);
+
+        const renderPerspective = () => {
+          nearSideGroup.visible = true;
+          roofGroup.visible = true;
+          const exportCamera = new THREE.PerspectiveCamera(31, aspect, 0.05, 90);
+          exportCamera.position.set(length * 0.2, height * 1.18, Math.max(width * 3.2, length * 1.05));
+          exportCamera.lookAt(new THREE.Vector3(0, height * 0.43, 0));
+          renderer.render(scene, exportCamera);
+          return canvas.toDataURL("image/jpeg", 0.9);
+        };
+        const renderOrthographic = (
+          horizontalSpan: number,
+          verticalSpan: number,
+          position: THREE.Vector3,
+          target: THREE.Vector3,
+          up: THREE.Vector3,
+          hideRoof: boolean,
+          hideNearSide: boolean,
+        ) => {
+          const halfHeight = Math.max(verticalSpan * 0.58, horizontalSpan / aspect * 0.58);
+          const halfWidth = halfHeight * aspect;
+          const exportCamera = new THREE.OrthographicCamera(-halfWidth, halfWidth, halfHeight, -halfHeight, 0.05, 100);
+          exportCamera.position.copy(position);
+          exportCamera.up.copy(up);
+          exportCamera.lookAt(target);
+          roofGroup.visible = !hideRoof;
+          nearSideGroup.visible = !hideNearSide;
+          renderer.render(scene, exportCamera);
+          return canvas.toDataURL("image/jpeg", 0.92);
+        };
+        const snapshots: LoadingSceneSnapshots = {
+          perspective: renderPerspective(),
+          top: renderOrthographic(
+            length + 0.35,
+            width + 0.25,
+            new THREE.Vector3(0, Math.max(length * 3, 24), 0.001),
+            new THREE.Vector3(0, 0, 0),
+            new THREE.Vector3(0, 0, -1),
+            true,
+            true,
+          ),
+          side: renderOrthographic(
+            length + 0.35,
+            height + 0.25,
+            new THREE.Vector3(0, height / 2, Math.max(length * 3, 24)),
+            new THREE.Vector3(0, height / 2, 0),
+            new THREE.Vector3(0, 1, 0),
+            true,
+            true,
+          ),
+          door: renderOrthographic(
+            width + 0.35,
+            height + 0.25,
+            new THREE.Vector3(Math.max(length * 3, 24), height / 2, 0),
+            new THREE.Vector3(0, height / 2, 0),
+            new THREE.Vector3(0, 1, 0),
+            false,
+            false,
+          ),
+        };
+        nearSideGroup.visible = originalNearSideVisibility;
+        roofGroup.visible = originalRoofVisibility;
+        scene.fog = originalFog;
+        renderer.setPixelRatio(originalPixelRatio);
+        renderer.setSize(originalSize.x, originalSize.y, false);
+        cargoGroups.forEach((group, index) => {
+          group.visible = originalVisibility[index];
+          group.position.x = originalOffsets[index];
+        });
+        renderer.render(scene, camera);
+        onSnapshotsRef.current?.(snapshots);
+      };
+
       const animate = () => {
         if (disposed) return;
         frame = window.requestAnimationFrame(animate);
@@ -569,22 +925,39 @@ export default function LoadingScene3D({
         renderer.render(scene, camera);
       };
       animate();
-      runtimeRef.current = { camera, controls, renderer, cargoGroups, homePosition, homeTarget };
+      runtimeRef.current = {
+        scene,
+        camera,
+        controls,
+        renderer,
+        cargoGroups,
+        nearSideGroup,
+        roofGroup,
+        markViewAdjusted: () => { userAdjustedCamera = true; },
+        homePosition,
+        homeTarget,
+        viewPositions,
+      };
       const currentVisible = visiblePositionCountRef.current === undefined
         ? cargoGroups.length
         : Math.max(0, Math.min(cargoGroups.length, visiblePositionCountRef.current));
       cargoGroups.forEach((group, index) => { group.visible = index < currentVisible; });
       previousVisibleRef.current = currentVisible;
+      const snapshotTimer = window.setTimeout(captureSnapshots, 160);
 
       return () => {
         disposed = true;
+        window.clearTimeout(snapshotTimer);
         window.cancelAnimationFrame(frame);
         resizeObserver.disconnect();
         intersectionObserver.disconnect();
         controls.removeEventListener("start", markCameraAdjusted);
         controls.dispose();
         scene.traverse((object) => {
-          if (object instanceof THREE.Mesh && object.geometry !== unitGeometry) object.geometry.dispose();
+          if ((object instanceof THREE.Mesh || object instanceof THREE.Line || object instanceof THREE.LineSegments)
+            && object.geometry !== unitGeometry) object.geometry.dispose();
+          if ((object instanceof THREE.Line || object instanceof THREE.LineSegments) && object.material instanceof THREE.Material)
+            object.material.dispose();
         });
         unitGeometry.dispose();
         disposableMaterials.forEach((material) => material.dispose());
@@ -602,11 +975,12 @@ export default function LoadingScene3D({
         disposableTextures.forEach((texture) => texture.dispose());
       };
     }
-  }, [container.h, container.l, container.w, doorClearance, orderedPositions, plan.blocks, sceneMounted, sideClearance]);
+  }, [container.h, container.l, container.w, doorClearance, doorHeight, doorWidth, isEnglish, orderedPositions, plan.blocks, sceneMounted, sideClearance, snapshotId, topClearance]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (!runtime) return;
+    runtime.markViewAdjusted();
     const visible = visiblePositionCount === undefined
       ? runtime.cargoGroups.length
       : Math.max(0, Math.min(runtime.cargoGroups.length, visiblePositionCount));
@@ -620,12 +994,27 @@ export default function LoadingScene3D({
     previousVisibleRef.current = visible;
   }, [visiblePositionCount, orderedPositions.length, plan]);
 
-  const resetView = () => {
+  const setStandardView = (view: "perspective" | "top" | "side" | "door") => {
     const runtime = runtimeRef.current;
     if (!runtime) return;
-    runtime.camera.position.copy(runtime.homePosition);
+    const dampingWasEnabled = runtime.controls.enableDamping;
+    runtime.controls.enableDamping = false;
+    runtime.controls.minPolarAngle = view === "top" ? 0 : 0.02;
+    runtime.controls.maxPolarAngle = Math.PI;
+    runtime.roofGroup.visible = view === "perspective" || view === "door";
+    runtime.nearSideGroup.visible = view === "perspective" || view === "door";
+    runtime.camera.up.set(0, 1, 0);
+    if (view === "top") runtime.camera.up.set(0, 0, -1);
+    runtime.camera.fov = view === "perspective" ? 29 : view === "door" ? 24 : 27;
+    runtime.camera.position.copy(runtime.viewPositions[view]);
     runtime.controls.target.copy(runtime.homeTarget);
+    if (view === "top") runtime.controls.target.set(0, 0, 0);
+    runtime.camera.lookAt(runtime.controls.target);
+    runtime.camera.updateProjectionMatrix();
     runtime.controls.update();
+    runtime.renderer.render(runtime.scene, runtime.camera);
+    runtime.controls.enableDamping = dampingWasEnabled;
+    setActiveView(view);
   };
 
   return (
@@ -634,11 +1023,28 @@ export default function LoadingScene3D({
         <div>
           <span>LIVE 3D</span>
           <h4>{isEnglish ? "REALISTIC LOADING SCENE" : "三维装柜实景"}</h4>
-          <p>{isEnglish ? "Exact plan coordinates · physical carton dimensions · open-side container view" : "按方案坐标和真实外箱尺寸生成 · 柜体剖开呈现"}</p>
+          <p>{isEnglish ? "ISO-style container shell · effective interior envelope · exact plan coordinates" : "ISO 柜体结构 · 有效内尺寸边界 · 按真实坐标与包装尺寸生成"}</p>
         </div>
         <div className="loading-scene-actions">
           <span>{isEnglish ? "Drag to orbit · pinch or wheel to zoom" : "拖动旋转 · 双指或滚轮缩放"}</span>
-          <button type="button" onClick={resetView}>{isEnglish ? "Reset view" : "复位视角"}</button>
+          <div className="loading-scene-view-switch" role="group" aria-label={isEnglish ? "Standard camera views" : "标准观察视角"}>
+            {(["perspective", "top", "side", "door"] as const).map((view) => (
+              <button
+                type="button"
+                className={activeView === view ? "active" : ""}
+                key={view}
+                onClick={() => setStandardView(view)}
+              >
+                {view === "perspective"
+                  ? isEnglish ? "3D" : "实景"
+                  : view === "top"
+                    ? isEnglish ? "TOP" : "俯视"
+                    : view === "side"
+                      ? isEnglish ? "SIDE" : "侧视"
+                      : isEnglish ? "DOOR" : "门侧"}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       <div className="loading-scene-stage">
@@ -652,11 +1058,12 @@ export default function LoadingScene3D({
         <div className="loading-scene-badge loading-scene-badge-front">{isEnglish ? "FRONT" : "箱头"}</div>
         <div className="loading-scene-badge loading-scene-badge-door">{isEnglish ? "DOOR / LOADING" : "箱门 / 装载端"}</div>
         <div className="loading-scene-scale">
-          <span>{(container.l / 1000).toFixed(3)} m</span>
+          <b>{isEnglish ? "EFFECTIVE INTERIOR" : "有效装载内尺寸"}</b>
+          <span>{((container.l - doorClearance) / 1000).toFixed(3)} m</span>
           <i />
-          <span>{(container.w / 1000).toFixed(3)} m</span>
+          <span>{((container.w - sideClearance * 2) / 1000).toFixed(3)} m</span>
           <i />
-          <span>{(container.h / 1000).toFixed(3)} m</span>
+          <span>{((container.h - topClearance) / 1000).toFixed(3)} m</span>
         </div>
       </div>
       <div className="loading-scene-legend">
@@ -667,7 +1074,11 @@ export default function LoadingScene3D({
             {block.loadedBoxes.toLocaleString()} BOX
           </span>
         ))}
-        <em>{isEnglish ? "Plastic pallets are rendered in slate blue when pallet loading is selected." : "选择托盘入柜时，塑料托盘以灰蓝色实体结构呈现。"}</em>
+        <em>
+          {isEnglish
+            ? `Dashed blue frame = effective loading envelope${doorWidth && doorHeight ? ` · door ${doorWidth} × ${doorHeight} mm` : ""}. Red tape = partial carton.`
+            : `蓝色虚线框＝有效装载边界${doorWidth && doorHeight ? ` · 门洞 ${doorWidth} × ${doorHeight} mm` : ""}；红色封箱带＝尾箱。`}
+        </em>
       </div>
     </section>
   );
