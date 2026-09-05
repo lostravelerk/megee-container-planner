@@ -19,6 +19,8 @@ import type { LoadingSceneSnapshots } from "./LoadingScene3D";
 import { usePlanningSearch } from "./usePlanningSearch";
 import PalletRealViews from "./PalletRealViews";
 import { occupiedPositionHeight } from "../lib/cargoGeometry.js";
+import { auditPlanMass } from "../lib/planMass.js";
+import PalletPolicySummary from "./PalletPolicySummary";
 
 type MixedRow = PlannerRow;
 type SharedPlanPayload = {
@@ -76,15 +78,6 @@ function formatNumber(value: number, digits = 0) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
-}
-
-function useDebouncedValue<T>(value: T, delay = 180) {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(value), delay);
-    return () => window.clearTimeout(timer);
-  }, [delay, value]);
-  return debounced;
 }
 
 function shortFingerprint(value: string) {
@@ -198,6 +191,10 @@ function PalletPatternView({
             : ` · ${isEnglish ? "FINAL TOP" : "末托顶层"} ${plan.finalTopLayerCartons}/${plan.cartonsPerLayer}`}
         </strong>
       </header>
+      <p className="pallet-height-basis">{isEnglish ? "Nominal / design height per pallet" : "单托名义高度 / 含尺寸余量的校核高度"}：
+        {formatNumber(item.pallet.h + plan.layersPerPallet * item.carton.h)} / {formatNumber(plan.stackHeight)} mm ·
+        {isEnglish ? "maximum pallet tiers" : "最多上下托盘层数"} {plan.stackLevels}
+      </p>
       <PalletRealViews item={item} language={language} eager={report} />
       <div className="pallet-pattern-body">
         <svg
@@ -1179,10 +1176,18 @@ export default function MixedPlanner({
   const [palletGap, setPalletGap] = useState(initialConfig?.palletGap ?? 20);
   const [palletTolerance, setPalletTolerance] = useState(initialConfig?.palletTolerance ?? 10);
   const [edgeInset, setEdgeInset] = useState(initialConfig?.edgeInset ?? 10);
+  const [payloadKg, setPayloadKg] = useState<number | "">(initialConfig?.payloadKg ?? "");
+  const [securingKg, setSecuringKg] = useState<number | "">(initialConfig?.securingKg ?? "");
   const [separatorThickness, setSeparatorThickness] = useState(initialConfig?.separatorThickness ?? 3);
   const [palletMinHeight, setPalletMinHeight] = useState(initialConfig?.palletMinHeight ?? 1200);
   const [palletHeightLimit, setPalletHeightLimit] = useState(initialConfig?.palletHeightLimit ?? 1800);
   const [allowDoubleStack, setAllowDoubleStack] = useState(initialConfig?.allowDoubleStack ?? true);
+  const [palletMode, setPalletMode] = useState<"standard" | NonNullable<PlannerConfig["palletPreset"]>>(
+    initialPlan ? initialConfig?.palletPreset || "auto" : "standard");
+  const [palletLayers, setPalletLayers] = useState(initialConfig?.palletLayers || 3);
+  const [palletStackLevels, setPalletStackLevels] = useState(initialConfig?.palletStackLevels || 2);
+  const palletPreset: NonNullable<PlannerConfig["palletPreset"]> = palletMode === "standard" ? (containerType === "40HQ" ? "hq-choice" : "gp-5x1") : palletMode;
+  const palletChoiceRequired = palletPreset === "hq-choice" && rows.some(row => row.packaging === "pallet");
   const allowSkuInterlock = true;
   const layoutStrategy = "maximum" as const;
   const [activeContainer, setActiveContainer] = useState(0);
@@ -1215,11 +1220,9 @@ export default function MixedPlanner({
       return { ...current, [key]: snapshots };
     });
   }, []);
-  // Controlled inputs update immediately.  Geometry and procurement searches
-  // run only after the operator pauses briefly, avoiding a full optimizer pass
-  // for every digit or IME composition event.
-  const calculationRows = useDebouncedValue(rows, 220);
-  const inputPending = calculationRows !== rows;
+  // Light validation follows editing; only the explicit button starts a worker.
+  const calculationRows = rows;
+  const [searchBudgetMs, setSearchBudgetMs] = useState(10000);
 
   const applySharedPayload = useCallback((payload: SharedPlanPayload) => {
     const sharedRows = payload.rows.map((row, index) => ({
@@ -1251,6 +1254,10 @@ export default function MixedPlanner({
     setPalletMinHeight(config.palletMinHeight ?? 1200);
     setPalletHeightLimit(config.palletHeightLimit ?? 1800);
     setAllowDoubleStack(config.allowDoubleStack !== false);
+    setPalletMode(config.palletPreset || "auto");
+    setPalletLayers(config.palletLayers || 3);
+    setPalletStackLevels(config.palletStackLevels || 2);
+    setPayloadKg(config.payloadKg ?? ""); setSecuringKg(config.securingKg ?? "");
     setActiveContainer(0);
   }, [containers]);
 
@@ -1319,6 +1326,9 @@ export default function MixedPlanner({
             targetQuantity: row.targetQuantity,
             maximumQuantity: row.maximumQuantity,
             eaPerBox: Number(row.eaPerBox),
+            grossKg: row.grossKg, tailGrossKg: row.tailGrossKg,
+            weightSourceQuantity: row.weightSourceQuantity ?? (row.productQuantity === "" ? undefined : Number(row.productQuantity)),
+            palletTareKg: row.palletTareKg, palletExtraKg: row.palletExtraKg,
             carton: { l: Number(row.l), w: Number(row.w), h: Number(row.h) },
             packaging: row.packaging,
             pallet:
@@ -1337,7 +1347,7 @@ export default function MixedPlanner({
     [calculationRows, planningMode],
   );
   const container = containers[containerType];
-  const loadingConfig = useMemo(
+  const loadingConfig = useMemo<PlannerConfig>(
     () => ({
       cartonTolerance,
       cartonGap,
@@ -1352,6 +1362,8 @@ export default function MixedPlanner({
       allowSkuInterlock,
       separatorThickness,
       palletMinHeight, palletHeightLimit, allowDoubleStack,
+      palletPreset, palletLayers, palletStackLevels,
+      payloadKg, securingKg,
     }),
     [
       cartonTolerance,
@@ -1367,6 +1379,8 @@ export default function MixedPlanner({
       allowSkuInterlock,
       separatorThickness,
       palletMinHeight, palletHeightLimit, allowDoubleStack,
+      palletPreset, palletLayers, palletStackLevels,
+      payloadKg, securingKg,
     ],
   );
   const orderItems = useMemo(
@@ -1379,9 +1393,9 @@ export default function MixedPlanner({
     [baseItems, calculationRows],
   );
   const search = usePlanningSearch({ items: planningMode === "capacity" ? baseItems : orderItems,
-    container, config: loadingConfig, mode: planningMode, containerCount });
+    container, config: { ...loadingConfig, searchBudgetMs }, mode: planningMode, containerCount });
   const capacityPlan = search.capacity;
-  const calculationsPending = inputPending || search.pending;
+  const calculationsPending = search.dirty || search.pending;
   const validItems = useMemo(
     () => planningMode === "capacity"
       ? capacityPlan && !capacityPlan.error
@@ -1420,6 +1434,7 @@ export default function MixedPlanner({
     [calculationRows, planningMode, baseItems, orderItems],
   );
   const preflight = useMemo(() => validateMixedPlan(result), [result]);
+  const massAudit = useMemo(() => auditPlanMass(result, loadingConfig), [result, loadingConfig]);
   const capacityConstraintErrors = useMemo(() => {
     if (planningMode !== "capacity" || !capacityPlan || capacityPlan.error)
       return [];
@@ -1472,6 +1487,7 @@ export default function MixedPlanner({
   const reportReady =
     !calculationsPending &&
     !search.error &&
+    massAudit.errors.length === 0 &&
     validItems.length > 0 &&
     incompleteRows.length === 0 &&
     preflight.ok &&
@@ -1524,7 +1540,7 @@ export default function MixedPlanner({
   );
   const stackingApprovalRequired = result.containers.some(plan =>
     plan.stackSupport?.conditionalStacks > 0 || plan.stackSupport?.conditionalPalletStacks > 0);
-  const executionConditional = securingRequired || palletTopActionRequired || stackingApprovalRequired;
+  const executionConditional = securingRequired || palletTopActionRequired || stackingApprovalRequired || !massAudit.verified;
   const chosenLayoutOption = layoutOptions.find(
     (option) => option.id === layoutStrategy,
   ) ?? layoutOptions[0];
@@ -1569,6 +1585,8 @@ export default function MixedPlanner({
       carton: item.carton,
       packaging: item.packaging,
       pallet: item.pallet,
+      grossKg: item.grossKg, tailGrossKg: item.tailGrossKg, weightSourceQuantity: item.weightSourceQuantity,
+      palletTareKg: item.palletTareKg, palletExtraKg: item.palletExtraKg,
     })),
     loadingConfig,
   }));
@@ -1618,8 +1636,10 @@ export default function MixedPlanner({
               edgeInset,
               separatorThickness,
               palletMinHeight, palletHeightLimit, allowDoubleStack,
+              palletPreset, palletLayers, palletStackLevels,
               allowSkuInterlock,
               layoutStrategy,
+              payloadKg, securingKg,
             },
           },
           expiryDays: Number(shareExpiryDays) || null,
@@ -1910,6 +1930,8 @@ export default function MixedPlanner({
       edgeInset,
       separatorThickness,
       palletMinHeight, palletHeightLimit, allowDoubleStack,
+      palletPreset, palletLayers, palletStackLevels,
+      payloadKg, securingKg,
     },
     summary: {
       skuCount: validItems.length,
@@ -2156,10 +2178,21 @@ export default function MixedPlanner({
             )}
           >
             <span>
-              {search.error ? tr(`计算未完成：${search.error}`, `Calculation failed: ${search.error}`) : calculationsPending
-                ? tr("输入已更新，正在搜索并校核排布…", "Input updated; searching and auditing layouts…")
+              {palletChoiceRequired ? tr("请先按客户要求选择单托6层或双托3＋3层。", "Choose the customer's single 6-layer or double 3+3-layer policy first.") : search.error ? tr(`计算未完成：${search.error}`, `Calculation failed: ${search.error}`) : search.pending
+                ? tr(`正在搜索并校核 · ${search.elapsed.toFixed(1)} 秒，可取消`, `Searching and auditing · ${search.elapsed.toFixed(1)} s · cancellable`)
+                : search.dirty ? tr(search.hasPrevious ? "输入已变更，旧结果不用于报告。请重新生成方案。" : "填写完成后，点击生成方案。", "Ready when you are. Generate a plan after completing the inputs.")
                 : tr("安全规则已启用：向上 · 可旋转 · 防重叠 · 尾箱门端优先", "Safety rules active: upright · rotation · no overlap · partial carton door-side priority")}
             </span>
+            <div className="planning-run-actions">
+              <select aria-label={tr("搜索深度", "Search depth")} value={searchBudgetMs} disabled={search.pending} onChange={e => setSearchBudgetMs(Number(e.target.value))}>
+                <option value={10000}>{tr("快速搜索 · 约 10 秒预算", "Quick · 10 s budget")}</option>
+                <option value={60000}>{tr("深入搜索 · 约 60 秒预算", "Deep · 60 s budget")}</option>
+              </select>
+              {search.pending ? <button onClick={search.cancel}>{tr("取消计算", "Cancel")}</button>
+                : <button className="primary" onClick={search.start} disabled={palletChoiceRequired || !baseItems.length || incompleteRows.length > 0}>{tr("生成装柜方案", "Generate plan")}</button>}
+            </div>
+            {capacityPlan?.searchBudgetReached && <small>{tr("已到搜索预算，显示已校验的最佳候选；不是全局最优证明。可继续深入搜索。", "Budget reached: best audited candidate, not a global optimum certificate.")}</small>}
+            {!calculationsPending && search.elapsed > 0 && <small>{tr(`本次计算耗时 ${search.elapsed.toFixed(2)} 秒`, `Calculation completed in ${search.elapsed.toFixed(2)} s`)}</small>}
           </div>
           <details className="mixed-advanced-config">
             <summary>
@@ -2170,6 +2203,10 @@ export default function MixedPlanner({
               </b>
             </summary>
             <div>
+              <label>{tr("每柜允许载货总重 kg（含辅材）", "Permitted payload kg, including securing")}
+                <input type="number" min="0" step="0.001" value={payloadKg} onChange={e => setPayloadKg(e.target.value === "" ? "" : Number(e.target.value))}/></label>
+              <label>{tr("每柜额外垫料 / 系固重量 kg", "Additional dunnage / securing kg per container")}
+                <input type="number" min="0" step="0.001" value={securingKg} onChange={e => setSecuringKg(e.target.value === "" ? "" : Number(e.target.value))}/></label>
               <label>
                 {tr("纸箱公差 mm", "Carton tolerance mm")}
                 <input
@@ -2241,7 +2278,28 @@ export default function MixedPlanner({
                 <input type="number" min="0" max="100" step="0.1" value={separatorThickness}
                   onChange={(event) => setSeparatorThickness(Math.max(0, Number(event.target.value)))} />
               </label>
-              <label>{tr("单托含货最低高度 mm", "Minimum loaded-pallet height mm")}
+              <label>{tr("托盘组托规则", "Pallet loading policy")}
+                <select value={palletMode} onChange={e => setPalletMode(e.target.value as typeof palletMode)}>
+                  <option value="standard">{tr("按柜型：HQ 待客户选择；GP 5层", "By container: HQ customer choice; GP 5 layers")}</option>
+                  <option value="hq-choice">{tr("待客户选择：单托6层 / 双托3+3", "Pending customer choice: 6 / 3+3 layers")}</option>
+                  <option value="hq-6x1">{tr("固定单托6层", "Fixed: 6 layers, single tier")}</option>
+                  <option value="hq-3x2">{tr("固定双托3+3", "Fixed: 3 layers, two tiers")}</option>
+                  <option value="gp-5x1">{tr("普柜：5层单托", "GP: 5 layers, single tier")}</option>
+                  <option value="factory-4x1">{tr("厂内/电梯：4层单托，静态限高1800 mm", "Factory: 4 layers, 1800 mm static limit")}</option>
+                  <option value="auto">{tr("自动比较层数与叠托", "Search layer and tier combinations")}</option>
+                  <option value="custom">{tr("自定义层数与叠托", "Custom layers and tiers")}</option>
+                </select>
+              </label>
+              {palletMode === "standard" && <p className="parameter-note">{tr(
+                containerType === "40HQ" ? "单托6层与双托3+3由客户选择，不自动决定；标准箱和托盘的名义总高分别2250 / 2400 mm。实际输入与余量参与校核，承压及操作条件须另行确认。"
+                  : "每托 5 层纸箱，单层托盘。350 mm 箱高＋150 mm 托盘的名义单托高度 1900 mm；校核另计尺寸余量。",
+                "HQ requires customer choice: nominal heights 2250 / 2400 mm. GP uses 5 layers, nominal 1900 mm. Verify actual dimensions, tolerances, strength and handling separately.")}</p>}
+              {palletMode === "factory-4x1" && <p className="parameter-note">{tr("标准尺寸4层名义高1550 mm；尺寸余量另计。电梯1800 mm是参考限高，还需核实货叉抬升、包装鼓包、设备和电梯载荷；不要把全部静态余高当作可用操作空间。", "Nominal 4-layer height: 1550 mm. Verify elevator clearance, fork lift, packaging bulge and equipment load limits separately.")}</p>}
+              {palletMode === "custom" && <>
+                <label>{tr("每托纸箱层数", "Carton layers per pallet")}<input type="number" min="1" max="50" value={palletLayers} onChange={e => setPalletLayers(Number(e.target.value))}/></label>
+                <label>{tr("上下托盘层数", "Pallet tiers")}<select value={palletStackLevels} onChange={e => setPalletStackLevels(Number(e.target.value))}><option value="1">1</option><option value="2">2</option></select></label>
+              </>}
+              {palletMode === "auto" && <><label>{tr("单托含货最低高度 mm", "Minimum loaded-pallet height mm")}
                 <input type="number" min="1" value={palletMinHeight} onChange={e => setPalletMinHeight(Number(e.target.value))} />
               </label>
               <label>{tr("单托含货最高高度 mm", "Maximum loaded-pallet height mm")}
@@ -2253,6 +2311,7 @@ export default function MixedPlanner({
                   <option value="one">{tr("仅一层托盘", "Single level only")}</option>
                 </select>
               </label>
+              </>}
               <label>
                 {tr("SKU 分区间隙 mm", "SKU zone gap mm")}
                 <input
@@ -2306,6 +2365,13 @@ export default function MixedPlanner({
           </details>
         </div>
 
+        {containerType === "40HQ" && rows.some(row => row.packaging === "pallet") && <fieldset className="customer-pallet-options">
+          <legend>{tr("40HQ 组托方式 · 按客户选择", "40HQ pallet policy · customer choice")}</legend>
+          <div>{([['hq-6x1', '单托 6 层', 'Single pallet · 6 layers', '36 箱 / 1 托 · 名义高 2250 mm', '36 cartons / 1 pallet · nominal 2250 mm'],
+            ['hq-3x2', '双托 3＋3 层', 'Two pallets · 3+3 layers', '18＋18 箱 / 2 托 · 名义总高 2400 mm', '18+18 cartons / 2 pallets · nominal 2400 mm']] as const).map(([value, zh, en, detailZh, detailEn]) =>
+              <label key={value} aria-label={tr(zh,en)} htmlFor={`customer-${value}`} className={palletPreset === value ? "selected" : ""}><input id={`customer-${value}`} type="radio" name="customer-hq-policy" value={value} checked={palletPreset === value} onChange={() => setPalletMode(value)}/><span><b>{tr(zh,en)}</b><small>{tr(detailZh,detailEn)}</small></span></label>)}</div>
+          <p>{tr("以上为480×380×350 mm外箱、1000×1200×150 mm托盘且每层6箱的标准参考，不替代当前输入。选择后按实际尺寸与余量重新计算；能放下不代表承压及运输安全已获批准。其他组托方式可在“装柜参数”中明确选择。", "Reference: 480×380×350 mm cartons, 1000×1200×150 mm pallets, 6 cartons/layer. Recalculate with current inputs and allowances after selection. Geometric fit is not strength or transport approval. Other policies can be explicitly selected under Loading parameters.")}</p>
+        </fieldset>}
         <div className="mixed-input-panel panel">
           <div className="mixed-section-heading">
             <div>
@@ -2615,8 +2681,8 @@ export default function MixedPlanner({
                       `${validItems.length} SKUs, ${formatNumber(result.totalDemandEa)} component EA and ${formatNumber(result.totalRequiredBoxes)} cartons; ${capacityPlan.evaluations} physical candidates were evaluated and the selected mix passed the full geometry audit${capacityPlan.residualCapacityVerified ? "; no permitted decision group can accept one additional EA" : ""}.`,
                     )
                   : tr(
-                      calculationsPending ? "正在比较排布候选，请稍候…" : `搜索尚未找到通过校核的方案：${capacityPlan?.error || search.error || "请检查数据"}`,
-                      calculationsPending ? "Comparing loading candidates…" : `No audited candidate found: ${capacityPlan?.error || search.error || "check the data"}`,
+                      search.pending ? "正在比较排布候选，请稍候…" : search.dirty ? "请完成输入后点击“生成装柜方案”。" : `搜索尚未找到通过校核的方案：${capacityPlan?.error || search.error || "请检查数据"}`,
+                      search.pending ? "Comparing loading candidates…" : search.dirty ? "Complete inputs and choose Generate plan." : `No audited candidate found: ${capacityPlan?.error || search.error || "check the data"}`,
                     )}
               </p>
             </div>
@@ -2645,7 +2711,22 @@ export default function MixedPlanner({
           ) : null}
         </div>
 
-        {validItems.length ? <div className="mixed-summary-grid">
+        <details className="planner-weight-inputs">
+          <summary>{tr("重量与载荷输入（未填不会被当作 0）", "Mass & payload inputs — blank means unknown")}</summary>
+          <p>{tr("每箱毛重含箱内包装；空托盘及托盘外部辅材另计。尾箱填本批实测值；数量改变后需复核。每柜载重上限和额外系固材料在“装柜参数”中填写。重量通过不代表承压、重心或运输安全认证。", "Carton gross includes its packaging. Pallet tare and external wrapping are additional. Partial-carton weight must match this batch. Enter payload and additional securing mass under Loading parameters; mass checks are not a transport safety certification.")}</p>
+          {rows.map((row,index) => <div className="planner-weight-row" key={row.id}><b>{row.code || `SKU ${index+1}`}</b>
+            {([['grossKg','单箱毛重 kg','Carton gross kg'],['tailGrossKg','尾箱实测毛重 kg','Partial gross kg'],...(row.packaging === "pallet" ? [['palletTareKg','空托盘重 kg','Pallet tare kg'],['palletExtraKg','每托外部辅材 kg','Wrapping per pallet kg']] : [])] as [keyof PlannerRow,string,string][]).map(([field,zh,en]) =>
+              <label key={field}>{tr(zh,en)}<input type="number" min="0" step="0.001" value={row[field] ?? ""} onChange={e => updateRow(row.id,{ [field]:e.target.value === "" ? "" : Number(e.target.value), ...(field === "tailGrossKg" ? {weightSourceQuantity:Number(row.productQuantity)} : {}) })}/></label>)}
+          </div>)}
+        </details>
+        {!search.dirty && result.containers.length > 0 && <div className="planner-mass-status" role="status">
+          <b>{tr("重量校核", "Mass audit")} · {massAudit.verified ? tr("通过已填限额检查", "Within entered limits") : tr("待确认 / 不通过", "Pending / failed")}</b>
+          {massAudit.containers.map(c=><span key={c.index}>#{c.index} · {c.grossKg === null ? tr("毛重待确认", "Gross unknown") : `${formatNumber(c.grossKg,3)} kg`} · {c.remainingKg === null ? tr("载重余量待确认", "Payload margin unknown") : `${tr("余量", "Margin")} ${formatNumber(c.remainingKg,3)} kg`}</span>)}
+          {massAudit.errors.map(e=><p key={e} className="mixed-error">{e}</p>)}
+          {!!massAudit.pending.length && <p>{tr("重量、额外系固用料或允许载荷未完整填写，当前报告只能作为待核实的几何规划。", "Missing mass, securing weight or payload: this is only a geometry proposal pending verification.")}</p>}
+        </div>}
+        {!calculationsPending && <PalletPolicySummary result={result} language={language} />}
+        {!calculationsPending && validItems.length ? <div className="mixed-summary-grid">
           <article>
             <span>{tr("有效 SKU", "Valid SKUs")}</span>
             <strong>{validItems.length}</strong>
@@ -2977,6 +3058,7 @@ export default function MixedPlanner({
                 : tr("尚未通过自检", "Preflight pending")}
             </span>
             <button onClick={() => setHtmlReportOpen(false)}>{tr("返回规划器", "Back to planner")}</button>
+            {calculationsPending && <button className="primary" disabled={palletChoiceRequired} onClick={search.pending ? search.cancel : search.start}>{search.pending ? tr("取消计算", "Cancel") : tr("生成当前方案", "Generate this plan")}</button>}
             <button className="primary" onClick={printReport}>{tr("打印 / PDF", "Print / PDF")}</button>
           </div>
         ) : null}
@@ -3048,6 +3130,12 @@ export default function MixedPlanner({
             </div>
           </dl>
         </header>
+        <div className="report-mass-audit">
+          <b>{tr("重量与载荷校核", "MASS & PAYLOAD CHECK")} · {massAudit.verified ? tr("符合已填限额", "Within entered limits") : tr("待核实，不代表运输批准", "Pending; not transport approval")}</b>
+          {massAudit.containers.map(c=><p key={c.index}>#{c.index} · {tr("总载货毛重", "Cargo gross")}: {c.grossKg === null ? tr("待确认", "Pending") : `${formatNumber(c.grossKg,3)} kg`} · {tr("允许载荷", "Payload limit")}: {c.payloadKg === null ? tr("待确认", "Pending") : `${formatNumber(c.payloadKg,3)} kg`} · {tr("重量余量", "Weight margin")}: {c.remainingKg === null ? tr("待确认", "Pending") : `${formatNumber(c.remainingKg,3)} kg`}</p>)}
+          <small>{tr("计入：整箱毛重、匹配本批数量的尾箱实测毛重、托盘自重、已填外部辅材和系固重量。未知项不得按 0 处理；不包含集装箱自重，非 VGM 声明。承压、重心与地板载荷需另行核实。", "Includes cartons, matched measured partial cartons, pallet tare, entered wrapping and securing mass. Unknown is not zero. Excludes container tare; not a VGM declaration. Verify compression, centre of gravity and floor loads separately.")}</small>
+        </div>
+        <PalletPolicySummary result={result} language={language} />
         <div className="report-summary-grid">
           <div>
             <span>{tr("产品款数", "PRODUCTS")}</span>

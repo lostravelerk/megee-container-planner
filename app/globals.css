@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./shipping.css";
 
 :root {
   --ink: #261e24;

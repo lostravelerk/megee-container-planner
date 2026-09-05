@@ -38,8 +38,8 @@ test("keeps the v3 product boundary and saved-plan controls explicit", async () 
   const shell = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
   const planner = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
   const types = await readFile(new URL("../app/plannerTypes.ts", import.meta.url), "utf8");
-  assert.match(shell, /APP_VERSION = "6\.0\.0"/);
-  assert.match(shell, /ALGORITHM_VERSION = "MIX 6\.0"/);
+  assert.match(shell, /APP_VERSION = "6\.1\.0"/);
+  assert.match(shell, /ALGORITHM_VERSION = "MIX 6\.1"/);
   assert.match(shell, /PLAN_STORAGE_KEY = "megee-container-saved-plans-v3"/);
   assert.match(shell, /column-filter-button/);
   assert.match(shell, /HTML报告/);
@@ -114,7 +114,10 @@ test("uses a real interactive 3D loading scene while retaining printable enginee
 test("uses the compact official MEGEE COSPACK vector mark without a bitmap asset", async () => {
   const shell = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
   const planner = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
-  assert.match(shell, /brand-wordmark/);
+  assert.match(shell, /<MegeeBrand/);
+  const brand = await readFile(new URL("../app/MegeeBrand.tsx", import.meta.url), "utf8");
+  assert.match(brand, /<svg/);
+  assert.match(brand, /MEGEE <em>美集/);
   assert.match(planner, /report-wordmark/);
   assert.match(planner, /M9 25 15\.5 15 21 25l5\.5-10L33 25/);
   assert.match(planner, /MEGEE<br \/>COSPACK/);

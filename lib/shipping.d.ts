@@ -1,0 +1,31 @@
+export type NumericInput = number | '';
+export type ShippingLine = {
+  id: string; code: string; name: string; lot: string; containerNo: string;
+  quantity: NumericInput; eaPerBox: NumericInput; l: NumericInput; w: NumericInput; h: NumericInput;
+  grossKg: NumericInput; netKg: NumericInput; tailGrossKg: NumericInput; tailNetKg: NumericInput;
+  profileId?: string; profileRevision?: number;
+};
+export type ProductProfile = ShippingLine & { revision: number };
+export type ShippingPallet = { id: string; number: string; containerNo: string; cartonIds: string[];
+  baseL?: NumericInput; baseW?: NumericInput; baseH?: NumericInput;
+  l: NumericInput; w: NumericInput; h: NumericInput; tareKg: NumericInput; extraKg: NumericInput; maxGrossKg: NumericInput };
+export type Shipment = { schemaVersion: 1; id: string; revision: number; reference: string; customer: string;
+  order: string; destination: string; date: string; lines: ShippingLine[]; pallets: ShippingPallet[];
+  status: 'draft' | 'confirmed'; confirmedAt?: string };
+export type ShipmentCarton = { id: string; lineId: string; code: string; name: string; lot: string; number: number;
+  quantity: number; tail: boolean; grossKg: number | null; netKg: number | null; cbm: number;
+  l: number; w: number; h: number; containerNo: string };
+export type ShipmentCalculation = {
+  errors: string[]; pending: string[]; ready: boolean;
+  lines: (Omit<ShippingLine, 'grossKg' | 'netKg'> & { cartons: number; tailEa: number; cbm: number; grossKg: number | null; netKg: number | null })[];
+  cartons: ShipmentCarton[]; loose: ShipmentCarton[];
+  pallets: (Omit<ShippingPallet, 'number'> & { number: string; members: ShipmentCarton[]; cbm: number | null;
+    grossKg: number | null; netKg: number | null; quantity: number })[];
+  totalQuantity: number; totalGrossKg: number | null; totalNetKg: number | null; totalCbm: number | null; cartonCbm: number;
+};
+export const SHIPPING_SCHEMA: 1;
+export function boxVolume(size: { l: NumericInput; w: NumericInput; h: NumericInput }): number | null;
+export function cartonCbmPerTenThousand(size: {l:NumericInput;w:NumericInput;h:NumericInput}, eaPerBox:NumericInput): number | null;
+export function calculateShipment(shipment: Shipment): ShipmentCalculation;
+export function confirmShipment(draft: Shipment, now?: string): Shipment;
+export function lineFromProfile(profile: ProductProfile, id: string): ShippingLine;

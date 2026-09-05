@@ -24,20 +24,45 @@ async function sha256(value: string) {
 
 function finiteNumber(value: unknown, minimum = 0, maximum = 1_000_000_000) {
   const number = Number(value);
-  return Number.isFinite(number)
-    ? Math.max(minimum, Math.min(maximum, number))
-    : minimum;
+  if (!Number.isFinite(number) || number < minimum || number > maximum)
+    throw new Error("Numeric input is outside the supported range; the shared plan cannot change it.");
+  return number;
+}
+
+function integerNumber(value: unknown, minimum = 0, maximum = 1_000_000_000) {
+  const number = finiteNumber(value, minimum, maximum);
+  if (!Number.isSafeInteger(number)) throw new Error("Quantity and layer counts must be integers; no rounding is permitted.");
+  return number;
+}
+
+function optionalQuantity(value: unknown) {
+  return value == null || value === "" ? "" : integerNumber(value);
+}
+
+function palletPolicy(value: unknown) {
+  if (value == null) return "auto"; // Legacy snapshot, not an implicit HQ choice.
+  const allowed = ["hq-choice", "hq-6x1", "hq-3x2", "gp-5x1", "factory-4x1", "custom", "auto"];
+  if (typeof value !== "string" || !allowed.includes(value)) throw new Error("Unknown customer pallet policy; select it explicitly.");
+  return value;
 }
 
 function text(value: unknown, maximum = 180) {
   return String(value ?? "").trim().slice(0, maximum);
 }
 
+function optionalMass(value: unknown) {
+  if (value == null || value === "") return "";
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > 1_000_000) throw new Error("Invalid weight input; no default or clamping is permitted.");
+  return number;
+}
+
 function sanitizePayload(input: unknown) {
   if (!input || typeof input !== "object") throw new Error("Invalid share payload.");
   const source = input as Record<string, unknown>;
-  const rows = Array.isArray(source.rows) ? source.rows.slice(0, 100) : [];
+  const rows = Array.isArray(source.rows) ? source.rows : [];
   if (!rows.length) throw new Error("A shared plan requires at least one SKU.");
+  if (rows.length > 100) throw new Error("A shared plan supports up to 100 SKUs; no rows were removed.");
   return {
     version: 1,
     title: text(source.title, 120),
@@ -45,7 +70,7 @@ function sanitizePayload(input: unknown) {
       ? text(source.containerType)
       : "40HQ",
     planningMode: source.planningMode === "capacity" ? "capacity" : "order",
-    containerCount: Math.max(1, Math.min(20, Math.floor(finiteNumber(source.containerCount, 1, 20)))),
+    containerCount: integerNumber(source.containerCount ?? 1, 1, 20),
     rows: rows.map((entry, index) => {
       const row = entry && typeof entry === "object"
         ? entry as Record<string, unknown>
@@ -55,23 +80,26 @@ function sanitizePayload(input: unknown) {
         series: text(row.series),
         code: text(row.code, 80),
         name: text(row.name, 240),
-        productQuantity: Math.floor(finiteNumber(row.productQuantity, 1)),
+        productQuantity: integerNumber(row.productQuantity, 1),
         quantityRule: ["fixed", "adjustable", "kit"].includes(text(row.quantityRule))
           ? text(row.quantityRule)
           : "fixed",
         kitCode: text(row.kitCode, 40) || "A",
-        minimumQuantity: Math.floor(finiteNumber(row.minimumQuantity, 0)),
-        targetQuantity: Math.floor(finiteNumber(row.targetQuantity, 0)),
-        maximumQuantity: Math.floor(finiteNumber(row.maximumQuantity, 0)),
-        eaPerBox: Math.floor(finiteNumber(row.eaPerBox, 1)),
-        l: finiteNumber(row.l, 10, 20_000),
-        w: finiteNumber(row.w, 10, 20_000),
-        h: finiteNumber(row.h, 10, 20_000),
+        minimumQuantity: optionalQuantity(row.minimumQuantity),
+        targetQuantity: optionalQuantity(row.targetQuantity),
+        maximumQuantity: optionalQuantity(row.maximumQuantity),
+        eaPerBox: integerNumber(row.eaPerBox, 1),
+        grossKg: optionalMass(row.grossKg), tailGrossKg: optionalMass(row.tailGrossKg),
+        weightSourceQuantity: row.weightSourceQuantity == null ? undefined : integerNumber(row.weightSourceQuantity),
+        palletTareKg: optionalMass(row.palletTareKg), palletExtraKg: optionalMass(row.palletExtraKg),
+        l: finiteNumber(row.l, Number.MIN_VALUE, 20_000),
+        w: finiteNumber(row.w, Number.MIN_VALUE, 20_000),
+        h: finiteNumber(row.h, Number.MIN_VALUE, 20_000),
         packaging: row.packaging === "pallet" ? "pallet" : "carton",
-        palletL: finiteNumber(row.palletL, 10, 20_000),
-        palletW: finiteNumber(row.palletW, 10, 20_000),
-        palletH: finiteNumber(row.palletH, 10, 5_000),
-        palletOverhang: finiteNumber(row.palletOverhang, 0, 200),
+        palletL: row.packaging !== "pallet" && (row.palletL == null || row.palletL === "") ? "" : finiteNumber(row.palletL, Number.MIN_VALUE, 20_000),
+        palletW: row.packaging !== "pallet" && (row.palletW == null || row.palletW === "") ? "" : finiteNumber(row.palletW, Number.MIN_VALUE, 20_000),
+        palletH: row.packaging !== "pallet" && (row.palletH == null || row.palletH === "") ? "" : finiteNumber(row.palletH, Number.MIN_VALUE, 5_000),
+        palletOverhang: finiteNumber(row.palletOverhang ?? 0, 0, 200),
       };
     }),
     config: (() => {
@@ -79,6 +107,7 @@ function sanitizePayload(input: unknown) {
         ? source.config as Record<string, unknown>
         : {};
       return {
+        payloadKg: optionalMass(config.payloadKg), securingKg: optionalMass(config.securingKg),
         cartonTolerance: finiteNumber(config.cartonTolerance, 0, 100),
         cartonGap: finiteNumber(config.cartonGap, 0, 200),
         skuGap: finiteNumber(config.skuGap, 0, 1000),
@@ -93,6 +122,9 @@ function sanitizePayload(input: unknown) {
         palletMinHeight: config.palletMinHeight == null ? 1200 : finiteNumber(config.palletMinHeight, 1, 4000),
         palletHeightLimit: config.palletHeightLimit == null ? 1800 : finiteNumber(config.palletHeightLimit, 1, 4000),
         allowDoubleStack: config.allowDoubleStack !== false,
+        palletPreset: palletPolicy(config.palletPreset),
+        palletLayers: config.palletLayers == null ? 3 : integerNumber(config.palletLayers, 1, 50),
+        palletStackLevels: config.palletStackLevels == null ? 2 : integerNumber(config.palletStackLevels, 1, 2),
         allowSkuInterlock: config.allowSkuInterlock !== false,
         layoutStrategy: ["maximum", "entered-order", "clear-zones"].includes(text(config.layoutStrategy))
           ? text(config.layoutStrategy)

@@ -27,7 +27,7 @@ export default function PalletRealViews({ item, language, eager = false }: {
   }, [item]);
   const en = language === "en";
   return <section className="pallet-real-views">
-    <p className="pallet-recommendation"><b>{en ? "Recommended standard column" : "推荐标准托盘垛"}</b>
+    <p className="pallet-recommendation"><b>{en ? "Selected pallet template" : "所选组托模板"}</b>
       {item.palletPlan.cartonsPerLayer} {en ? "cartons/layer" : "箱/层"} × {item.palletPlan.layersPerPallet} {en ? "layers/pallet" : "层/托"}
       {" · "}{item.palletPlan.stackHeight} mm/{en ? "pallet" : "托"}{" · "}{item.palletPlan.stackLevels} {en ? "pallet level(s)" : "层托盘"}
       {" · "}{en ? "column" : "整垛高"} {model.dimensions.h} mm

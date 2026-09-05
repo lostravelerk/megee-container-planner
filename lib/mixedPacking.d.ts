@@ -16,6 +16,8 @@ export type MixedItem = {
   productQuantity?: number; requestedEa?: number; eaPerBox: number; carton: Dimensions;
   packaging?: "carton" | "pallet"; pallet?: Dimensions; palletOverhang?: number;
   quantityRule?: QuantityRule; kitCode?: string;
+  grossKg?: number | ""; tailGrossKg?: number | ""; weightSourceQuantity?: number;
+  palletTareKg?: number | ""; palletExtraKg?: number | "";
   minimumQuantity?: number | ""; targetQuantity?: number | ""; maximumQuantity?: number | "";
 };
 export type PalletPlan = {
@@ -58,7 +60,7 @@ export type ContainerPlan = {
   maximumInternalVoid: number; maximumRowEndVoid: number; maximumLeadingVoid: number; internalVoidArea: number;
   doorStaging: DoorStaging; stackSupport: StackSupport; stowVoids: StowVoids; requiresSecuring: boolean;
 };
-export type PackingConfig = Partial<PlannerConfig> & { palletMinHeight?: number; palletHeightLimit?: number;
+export type PackingConfig = Partial<PlannerConfig> & { searchBudgetMs?: number; maximumOnly?: boolean; palletMinHeight?: number; palletHeightLimit?: number;
   allowDoubleStack?: boolean; allowSkuInterlock?: boolean; maxContainers?: number; containerCount?: number;
   doorWidth?: number; doorHeight?: number };
 export type PlanResult = {
@@ -75,7 +77,7 @@ export type ProcurementCandidate = { quantities: Record<string, number>; groupQu
   result: PlanResult; feasible: boolean; utilization: number; targetDistance: number; audit: Audit };
 export type ProcurementResult = { quantities: Record<string, number>; result: PlanResult; candidates: ProcurementCandidate[];
   evaluations: number; error: string; adjacentQuantitiesRejected?: boolean; residualCapacityVerified?: false;
-  optimalityProven?: false; searchMethod?: string;
+  optimalityProven?: false; searchMethod?: string; searchBudgetReached?: boolean;
   saturationChecks?: Array<{key: string; quantity: number; limit: number; reason: string}> };
 export function cartonsForDemand(productQuantity: number, eaPerBox: number): number;
 export function planMixedContainers(items: MixedItem[], container: Dimensions, config?: PackingConfig): PlanResult;

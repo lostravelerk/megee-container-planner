@@ -31,6 +31,11 @@ export type PlannerRow = {
   palletW: number | "";
   palletH: number | "";
   palletOverhang: number | "";
+  grossKg?: number | "";
+  tailGrossKg?: number | "";
+  weightSourceQuantity?: number;
+  palletTareKg?: number | "";
+  palletExtraKg?: number | "";
 };
 
 export type PlannerConfig = {
@@ -48,6 +53,11 @@ export type PlannerConfig = {
   palletMinHeight?: number;
   palletHeightLimit?: number;
   allowDoubleStack?: boolean;
+  palletPreset?: "hq-choice" | "hq-6x1" | "hq-3x2" | "gp-5x1" | "factory-4x1" | "custom" | "auto";
+  palletLayers?: number;
+  palletStackLevels?: number;
+  payloadKg?: number | "";
+  securingKg?: number | "";
 };
 
 export type PlannerSnapshot = {
