@@ -1,0 +1,54 @@
+/* Mandatory contract: docs/table-layout-contract.md. Keep paired th/td rules. */
+:is(.data-table,.mixed-entry-grid,.mixed-allocation-table,.report-product-master-table,.mixed-report-allocation,.packing-list-products,.packing-list-allocation,.plan-library-table) :is(th,td) {
+  vertical-align: middle !important;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.data-table { width:100%; border-collapse:collapse; color:#294153; font-size:14px; }
+.data-table :is(th,td) { padding:10px 12px; border-bottom:1px solid #cdd9e2; text-align:left !important; line-height:1.5; }
+.data-table th { background:#f0f5f8; font-weight:650; }
+.data-table tfoot :is(th,td) { border-top:1px solid #7d95a7; font-weight:650; }
+/* A numeric header uses exactly the same alignment as its numeric cells. */
+table.data-table :is(th,td).numeric,
+table.plan-library-table :is(th,td).numeric,
+.mixed-entry-grid :is(thead,tbody) :is(th,td):is(:nth-child(4),:nth-child(5),:nth-child(8),:nth-child(9),:nth-child(10)),
+.mixed-allocation-table :is(thead,tbody) :is(th,td):is(:nth-child(6),:nth-child(7),:nth-child(8),:nth-child(9)),
+.report-product-master-table :is(thead,tbody) :is(th,td):is(:nth-child(3),:nth-child(4),:nth-child(7),:nth-child(8),:nth-child(9)),
+.mixed-report-allocation :is(thead,tbody) :is(th,td):is(:nth-child(4),:nth-child(5),:nth-child(6)),
+.packing-list-products :is(thead,tbody) :is(th,td):is(:nth-child(6),:nth-child(7),:nth-child(8),:nth-child(9),:nth-child(11),:nth-child(12)),
+.packing-list-allocation :is(thead,tbody) :is(th,td):is(:nth-child(6),:nth-child(7),:nth-child(8),:nth-child(9),:nth-child(10)) {
+  text-align:right !important; overflow-wrap:normal !important; word-break:normal !important;
+}
+table.data-table td.numeric { white-space:nowrap; }
+table.data-table :is(th,td).center,
+:is(.mixed-entry-grid,.mixed-allocation-table,.report-product-master-table,.mixed-report-allocation,.packing-list-products) :is(thead,tbody) :is(th,td):first-child,
+.packing-list-allocation :is(thead,tbody) :is(th,td):nth-child(2) { text-align:center !important; }
+/* Units and groups may wrap at spaces, never in the middle of a number/token. */
+.data-table th.numeric { white-space:normal; }
+.mixed-entry-grid input[type=number] { text-align:right; font-variant-numeric:tabular-nums; }
+.mixed-entry-grid .quantity-rule-controls,.mixed-entry-grid .quantity-rule-bounds { text-align:left; }
+.data-table-scroll { max-width:100%; overflow-x:auto; }
+.carton-weight-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-top:8px; min-width:0; }
+.carton-weight-fields label { display:grid; gap:4px; min-width:0; margin:0; color:#526c7f; font-size:11px; line-height:1.4; text-align:left; }
+.carton-weight-fields input { width:100%; min-width:0; text-align:right; font-variant-numeric:tabular-nums; }
+.carton-weight-fields input[readonly] { background:#f0f4f7; color:#557080; cursor:default; }
+.carton-weight-fields input[aria-invalid=true] { border-color:#b84646; }
+.carton-weight-fields small { grid-column:1/-1; color:#ae3333; }
+.carton-weight-summary { margin:16px 0; padding:14px; border:1px solid #cdd9e2; border-radius:12px; background:white; }
+.carton-weight-summary h2 { margin:0 0 10px; font-size:18px; }
+.weight-basis-note,.batch-weight-totals { margin:10px 0 0; font-size:13px; line-height:1.65; color:#526c7f; }
+@media screen and (max-width:700px) {
+  .carton-weight-summary .data-table { min-width:680px; }
+  .mixed-entry-grid td::before { text-align:left; }
+  .carton-weight-summary { padding:10px; }
+}
+@media print {
+  :is(.data-table,.mixed-report-allocation,.report-product-master-table,.packing-list-products,.packing-list-allocation) { break-inside:auto !important; page-break-inside:auto !important; }
+  :is(.data-table,.mixed-report-allocation,.report-product-master-table,.packing-list-products,.packing-list-allocation) thead { display:table-header-group; }
+  :is(.data-table,.mixed-report-allocation,.report-product-master-table,.packing-list-products,.packing-list-allocation) tr { break-inside:avoid; page-break-inside:avoid; }
+  .data-table-scroll { overflow:visible; }
+  .carton-weight-summary { border-radius:0; padding:2mm; margin:3mm 0; break-inside:auto; }
+  .carton-weight-summary h2 { font-size:10pt; break-after:avoid; }
+  .carton-weight-summary .data-table { min-width:0; font-size:8pt; }
+  .carton-weight-summary .data-table :is(th,td) { padding:1.5mm; }
+  .weight-basis-note { font-size:8pt; line-height:1.5; }
+}

@@ -2,15 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import MixedPlanner from "./MixedPlanner";
-import ShippingWorkspace from "./ShippingWorkspace";
 import MegeeBrand from "./MegeeBrand";
 import type { Language, PlannerSnapshot, SavedPlanRecord } from "./plannerTypes";
 
-type WorkspaceView = "planner" | "library" | "shipments" | "products";
+type WorkspaceView = "planner" | "library";
 type LibraryFilterKey = "title" | "mode" | "container" | "status";
 
-const APP_VERSION = "6.1.0";
-const ALGORITHM_VERSION = "MIX 6.1";
+const APP_VERSION = "6.2.0";
+const ALGORITHM_VERSION = "MIX 6.2";
 const BUILD_VERSION = import.meta.env.VITE_BUILD_COMMIT || "local";
 const PLAN_STORAGE_KEY = "megee-container-saved-plans-v3";
 
@@ -353,8 +352,6 @@ export default function LoadPlanner({ initialShareId = "" }: { initialShareId?: 
       <header className="app-header-v3">
         <MegeeBrand />
         <nav aria-label={tr("主导航", "Primary navigation")}>
-          <button className={view === "shipments" ? "active" : ""} onClick={() => setView("shipments")}>{tr("批次装箱单", "Shipments")}</button>
-          <button className={view === "products" ? "active" : ""} onClick={() => setView("products")}>{tr("产品包装", "Products")}</button>
           <button className={view === "planner" ? "active" : ""} onClick={() => setView("planner")}>{tr("装柜规划", "Loading Planner")}</button>
           <button className={view === "library" ? "active" : ""} onClick={() => setView("library")}>{tr("装柜方案库", "Saved Plans")}<small>{plans.length}</small></button>
         </nav>
@@ -366,17 +363,6 @@ export default function LoadPlanner({ initialShareId = "" }: { initialShareId?: 
 
       <div hidden={view !== "planner"}>
         <MixedPlanner key={plannerKey} language={language} containers={CONTAINERS} appVersion={APP_VERSION} algorithmVersion={ALGORITHM_VERSION} buildVersion={BUILD_VERSION} initialShareId={initialShareId} initialPlan={activePlan} initialReportOpen={openReport} onSavePlan={savePlan} />
-      </div>
-      <div hidden={view !== "shipments" && view !== "products"}>
-        <ShippingWorkspace view={view === "products" ? "products" : "shipments"} language={language} onPlan={(rows, title) => {
-          const now = new Date().toISOString();
-          setActivePlan({ schemaVersion: 3, id: `LP-${crypto.randomUUID()}`, revision: 0, status: "draft", createdAt: now, updatedAt: now,
-            title, rows, containerType: "40HQ", containerCount: 1, planningMode: "order",
-            config: { cartonTolerance: 3, cartonGap: 5, skuGap: 30, doorClearance: 80, sideClearance: 30,
-              topClearance: 50, palletCartonGap: 5, palletGap: 20, palletTolerance: 10, edgeInset: 10, palletPreset: "hq-choice" },
-            summary: { skuCount: rows.length, productQuantity: 0, completeKits: null, cartons: 0, pallets: 0, cbm: 0, containers: 0, utilization: 0 } });
-          setOpenReport(false); setPlannerKey(`shipment-${crypto.randomUUID()}`); setView("planner");
-        }}/>
       </div>
       {view === "library" && (
         <PlanLibrary language={language} plans={plans} onOpen={openPlan} onNew={newPlan} onDelete={deletePlan} />

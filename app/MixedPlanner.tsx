@@ -21,6 +21,8 @@ import PalletRealViews from "./PalletRealViews";
 import { occupiedPositionHeight } from "../lib/cargoGeometry.js";
 import { auditPlanMass } from "../lib/planMass.js";
 import PalletPolicySummary from "./PalletPolicySummary";
+import StandardCartonWeights from "./StandardCartonWeights";
+import CartonWeightSummary from "./CartonWeightSummary";
 
 type MixedRow = PlannerRow;
 type SharedPlanPayload = {
@@ -1487,7 +1489,6 @@ export default function MixedPlanner({
   const reportReady =
     !calculationsPending &&
     !search.error &&
-    massAudit.errors.length === 0 &&
     validItems.length > 0 &&
     incompleteRows.length === 0 &&
     preflight.ok &&
@@ -1540,7 +1541,7 @@ export default function MixedPlanner({
   );
   const stackingApprovalRequired = result.containers.some(plan =>
     plan.stackSupport?.conditionalStacks > 0 || plan.stackSupport?.conditionalPalletStacks > 0);
-  const executionConditional = securingRequired || palletTopActionRequired || stackingApprovalRequired || !massAudit.verified;
+  const executionConditional = securingRequired || palletTopActionRequired || stackingApprovalRequired;
   const chosenLayoutOption = layoutOptions.find(
     (option) => option.id === layoutStrategy,
   ) ?? layoutOptions[0];
@@ -2203,10 +2204,6 @@ export default function MixedPlanner({
               </b>
             </summary>
             <div>
-              <label>{tr("每柜允许载货总重 kg（含辅材）", "Permitted payload kg, including securing")}
-                <input type="number" min="0" step="0.001" value={payloadKg} onChange={e => setPayloadKg(e.target.value === "" ? "" : Number(e.target.value))}/></label>
-              <label>{tr("每柜额外垫料 / 系固重量 kg", "Additional dunnage / securing kg per container")}
-                <input type="number" min="0" step="0.001" value={securingKg} onChange={e => setSecuringKg(e.target.value === "" ? "" : Number(e.target.value))}/></label>
               <label>
                 {tr("纸箱公差 mm", "Carton tolerance mm")}
                 <input
@@ -2406,7 +2403,7 @@ export default function MixedPlanner({
                   <th>{tr("产品代码 / 品名规格", "Code / Product")}</th>
                   <th>{planningMode === "capacity" ? tr("数量 / 规则", "Quantity / Rule") : tr("产品数量", "Product quantity")}</th>
                   <th>{tr("装箱数量 EA/BOX", "PACK QTY EA/BOX")}</th>
-                  <th>{tr("外箱 L×W×H", "Carton L×W×H")}</th>
+                  <th>{tr("外箱尺寸 mm / 每箱重量 kg", "Carton dimensions mm / weight kg")}</th>
                   <th>{tr("包装 / 托盘参数", "Pack / Pallet")}</th>
                   <th>{tr("总箱数", "Total cartons")}</th>
                   <th>{tr("CBM 材积", "Packaging CBM")}</th>
@@ -2551,6 +2548,8 @@ export default function MixedPlanner({
                             </label>
                           ))}
                         </div>
+                        <StandardCartonWeights grossKg={row.grossKg} label={`${row.code || index + 1}`} english={language === "en"}
+                          onChange={grossKg => updateRow(row.id, { grossKg })}/>
                       </td>
                       <td className="packaging-cell" data-label={tr("包装 / 托盘参数", "Pack / Pallet")}>
                         <select
@@ -2711,20 +2710,12 @@ export default function MixedPlanner({
           ) : null}
         </div>
 
-        <details className="planner-weight-inputs">
-          <summary>{tr("重量与载荷输入（未填不会被当作 0）", "Mass & payload inputs — blank means unknown")}</summary>
-          <p>{tr("每箱毛重含箱内包装；空托盘及托盘外部辅材另计。尾箱填本批实测值；数量改变后需复核。每柜载重上限和额外系固材料在“装柜参数”中填写。重量通过不代表承压、重心或运输安全认证。", "Carton gross includes its packaging. Pallet tare and external wrapping are additional. Partial-carton weight must match this batch. Enter payload and additional securing mass under Loading parameters; mass checks are not a transport safety certification.")}</p>
-          {rows.map((row,index) => <div className="planner-weight-row" key={row.id}><b>{row.code || `SKU ${index+1}`}</b>
-            {([['grossKg','单箱毛重 kg','Carton gross kg'],['tailGrossKg','尾箱实测毛重 kg','Partial gross kg'],...(row.packaging === "pallet" ? [['palletTareKg','空托盘重 kg','Pallet tare kg'],['palletExtraKg','每托外部辅材 kg','Wrapping per pallet kg']] : [])] as [keyof PlannerRow,string,string][]).map(([field,zh,en]) =>
-              <label key={field}>{tr(zh,en)}<input type="number" min="0" step="0.001" value={row[field] ?? ""} onChange={e => updateRow(row.id,{ [field]:e.target.value === "" ? "" : Number(e.target.value), ...(field === "tailGrossKg" ? {weightSourceQuantity:Number(row.productQuantity)} : {}) })}/></label>)}
-          </div>)}
-        </details>
-        {!search.dirty && result.containers.length > 0 && <div className="planner-mass-status" role="status">
-          <b>{tr("重量校核", "Mass audit")} · {massAudit.verified ? tr("通过已填限额检查", "Within entered limits") : tr("待确认 / 不通过", "Pending / failed")}</b>
-          {massAudit.containers.map(c=><span key={c.index}>#{c.index} · {c.grossKg === null ? tr("毛重待确认", "Gross unknown") : `${formatNumber(c.grossKg,3)} kg`} · {c.remainingKg === null ? tr("载重余量待确认", "Payload margin unknown") : `${tr("余量", "Margin")} ${formatNumber(c.remainingKg,3)} kg`}</span>)}
-          {massAudit.errors.map(e=><p key={e} className="mixed-error">{e}</p>)}
-          {!!massAudit.pending.length && <p>{tr("重量、额外系固用料或允许载荷未完整填写，当前报告只能作为待核实的几何规划。", "Missing mass, securing weight or payload: this is only a geometry proposal pending verification.")}</p>}
-        </div>}
+        {!search.dirty && result.containers.length > 0 && <p className="batch-weight-totals" role="status">
+          <b>{tr("批货纸箱重量", "Batch carton weights")}</b>
+          <span>G.W. {massAudit.totalGrossKg === null ? "—" : formatNumber(massAudit.totalGrossKg, 3)} kg</span>
+          <span>N.W. {massAudit.totalNetKg === null ? "—" : formatNumber(massAudit.totalNetKg, 3)} kg</span>
+          <small>{tr("净重＝毛重−1 kg/箱；尾箱按件数估算。不含托盘及外部辅材，不校验柜载荷。", "N.W. = G.W. − 1 kg/carton; partials estimated by EA. Excludes pallets and external materials. No payload check.")}</small>
+        </p>}
         {!calculationsPending && <PalletPolicySummary result={result} language={language} />}
         {!calculationsPending && validItems.length ? <div className="mixed-summary-grid">
           <article>
@@ -3130,11 +3121,7 @@ export default function MixedPlanner({
             </div>
           </dl>
         </header>
-        <div className="report-mass-audit">
-          <b>{tr("重量与载荷校核", "MASS & PAYLOAD CHECK")} · {massAudit.verified ? tr("符合已填限额", "Within entered limits") : tr("待核实，不代表运输批准", "Pending; not transport approval")}</b>
-          {massAudit.containers.map(c=><p key={c.index}>#{c.index} · {tr("总载货毛重", "Cargo gross")}: {c.grossKg === null ? tr("待确认", "Pending") : `${formatNumber(c.grossKg,3)} kg`} · {tr("允许载荷", "Payload limit")}: {c.payloadKg === null ? tr("待确认", "Pending") : `${formatNumber(c.payloadKg,3)} kg`} · {tr("重量余量", "Weight margin")}: {c.remainingKg === null ? tr("待确认", "Pending") : `${formatNumber(c.remainingKg,3)} kg`}</p>)}
-          <small>{tr("计入：整箱毛重、匹配本批数量的尾箱实测毛重、托盘自重、已填外部辅材和系固重量。未知项不得按 0 处理；不包含集装箱自重，非 VGM 声明。承压、重心与地板载荷需另行核实。", "Includes cartons, matched measured partial cartons, pallet tare, entered wrapping and securing mass. Unknown is not zero. Excludes container tare; not a VGM declaration. Verify compression, centre of gravity and floor loads separately.")}</small>
-        </div>
+        <CartonWeightSummary result={result} english={language === "en"}/>
         <PalletPolicySummary result={result} language={language} />
         <div className="report-summary-grid">
           <div>
@@ -3371,8 +3358,8 @@ export default function MixedPlanner({
             </li>
             <li>
               {tr(
-                "本工具以单一水平方向累计空隙 150 mm 作为工程复核触发值，不是普适安全保证。超过时须按警示采用经批准的挡木、填充、支撑/系固方案并签字后封柜。实景不绘制柜体，尺寸以报告有效边界为准，任何包装不得越界。",
-                "A cumulative horizontal void of 150 mm triggers an engineering review in this tool, not a universal safety guarantee. Obtain approved blocking, filling, bracing/securing and sign-off where triggered. Cargo views omit the container shell; no package may exceed the reported effective boundaries.",
+                "本工具以单一水平方向累计空隙 150 mm 作为工程复核触发值，不是普适安全保证。超过时须按警示采用经批准的挡木、填充、支撑/系固方案并签字后封柜。实景仅保留前壁、箱底和远侧壁作为尺寸参照；任何包装不得越过报告有效边界。",
+                "A cumulative horizontal void of 150 mm triggers an engineering review in this tool, not a universal safety guarantee. Obtain approved blocking, filling, bracing/securing and sign-off where triggered. The front wall, floor and far wall provide scale references; no package may exceed the reported effective boundaries.",
               )}
             </li>
             <li>
@@ -3383,8 +3370,8 @@ export default function MixedPlanner({
             </li>
             <li>
               {tr(
-                `本报告为已搜索候选中的推荐方案，不宣称已证明全局最大装量。满垛向箱头排紧，余箱统一在门端；门端分放容纳不下时，允许完整底面支撑的混合竖垛，跨 SKU 隔板按 ${separatorThickness} mm 计入高度，并须取得承压复核依据。禁止在尾箱上承重。不可消除的空隙须按图处理，不得用图形遮盖或虚构填满。`,
-                `This is the recommended searched candidate, not a proven global maximum. Full columns compact towards the closed end; remainders stay at the door. When separate columns cannot fit, mixed columns require full footprint support, ${separatorThickness} mm separators and compression approval. Never load above a partial carton. Residual voids must be treated as shown, never hidden or fictitiously filled.`,
+                `本报告为已搜索候选中的推荐方案，不宣称已证明全局最大装量。满垛向箱头排紧，余箱统一在门端；纸箱余箱同时比较分放和混合竖垛，混垛必须完整底面支撑，跨 SKU 隔板按 ${separatorThickness} mm 计入高度，并须取得承压复核依据。当前不自动合并跨 SKU 末托。禁止在尾箱上承重。不可消除的空隙须按图处理，不得用图形遮盖或虚构填满。`,
+                `This is the recommended searched candidate, not a proven global maximum. Full columns compact towards the closed end; remainders stay at the door. Separate and mixed carton columns are compared; mixed columns require full footprint support, ${separatorThickness} mm separators and compression approval. Cross-SKU last-pallet consolidation is not automated. Never load above a partial carton. Residual voids must be treated as shown, never hidden or fictitiously filled.`,
               )}
             </li>
           </ol>
@@ -3777,6 +3764,7 @@ export default function MixedPlanner({
           </div>
         </section>
 
+        <CartonWeightSummary result={result} english={language === "en"}/>
         <section className="packing-list-section">
           <h2>{tr("产品包装明细", "PRODUCT PACKING DETAILS")}</h2>
           <table className="packing-list-products">

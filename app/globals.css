@@ -1,5 +1,6 @@
 @import "tailwindcss";
-@import "./shipping.css";
+@import "./workspace.css";
+@import "./data-tables.css";
 
 :root {
   --ink: #261e24;
@@ -2891,6 +2892,48 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
   .mixed-print-report .pallet-pattern-body { break-inside: avoid; }
 }
 .door-remainder-manifest h4 { margin: 0 0 8px; font-size: 16px; }
+/* Camera presets live next to the canvas, not in a crowded title corner. */
+.scene-camera-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:10px 18px; padding:12px 18px; border-bottom:1px solid #dce5ec; background:#f7f9fb; }
+.scene-camera-presets { display:grid; grid-template-columns:repeat(4,minmax(70px,1fr)); gap:4px; padding:4px; border:1px solid #d5e0e8; border-radius:12px; background:#eaf0f5; }
+.scene-camera-presets button { min-width:0; min-height:44px; padding:8px 12px; border:1px solid transparent; border-radius:8px; color:#38566b; background:transparent; font-size:14px; font-weight:650; white-space:nowrap; }
+.scene-camera-presets button[aria-pressed=true] { color:#0864b6; background:#fff; border-color:#c5daed; box-shadow:0 2px 5px #244c7112; }
+.scene-camera-presets button:focus-visible { outline:2px solid #0875ce; outline-offset:2px; }
+.scene-camera-toolbar .scene-manipulation-controls { margin-left:auto; padding:0; border:0; }
+.scene-camera-toolbar > p { flex-basis:100%; margin:0; color:#637b8c; font-size:12px; line-height:1.5; }
+@media screen and (max-width:900px) {
+  .scene-camera-toolbar { padding:10px 12px; }
+  .scene-camera-presets { width:100%; grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .scene-camera-presets button { padding:8px 4px; font-size:13px; }
+  .scene-camera-toolbar .scene-manipulation-controls { width:100%; margin:0; }
+}
+@media print { .scene-camera-toolbar { display:none !important; } }
+/* Long views share a wide left column; the door view spans their right side. */
+.report-scene-snapshots { grid-template-columns:minmax(0,3fr) minmax(0,1.15fr); grid-template-areas:"perspective perspective" "top door" "side door"; align-items:stretch; gap:12px; }
+.report-scene-perspective { grid-area:perspective; }
+.report-scene-top { grid-area:top; }
+.report-scene-side { grid-area:side; }
+.report-scene-door { grid-area:door; display:flex; flex-direction:column; justify-content:center; }
+.report-scene-snapshot img { height:auto; width:100%; aspect-ratio:auto; object-fit:contain !important; }
+.report-scene-perspective img { max-height:650px; }
+.report-scene-snapshot figcaption { flex-wrap:wrap; min-height:0; padding:10px 14px; line-height:1.5; }
+.report-scene-snapshot figcaption b { font-size:14px; }
+.report-scene-snapshot figcaption span { font-size:12px; }
+.report-scene-door figcaption { margin-top:auto; }
+@media screen and (max-width:700px) {
+  .report-scene-snapshots { grid-template-columns:minmax(0,1fr); grid-template-areas:"perspective" "top" "side" "door"; }
+  .report-scene-door img { max-height:420px; }
+  .report-scene-snapshot figcaption { padding:8px 10px; }
+  .report-scene-snapshot figcaption span { font-size:11px; text-align:left; }
+}
+@media print {
+  .mixed-print-report .report-scene-snapshots { display:grid !important; grid-template-columns:minmax(0,3fr) minmax(0,1.15fr); gap:2.5mm; }
+  .mixed-print-report .report-scene-snapshot { margin:0; box-shadow:none; border-radius:1.5mm; }
+  .mixed-print-report .report-scene-snapshot img { height:auto; max-height:none; }
+  .mixed-print-report .report-scene-perspective img { max-height:70mm; }
+  .mixed-print-report .report-scene-snapshot figcaption { padding:1.5mm 2mm; min-height:0; }
+  .mixed-print-report .report-scene-snapshot figcaption b { font-size:8pt; }
+  .mixed-print-report .report-scene-snapshot figcaption span { font-size:7pt; text-align:left; }
+}
 .door-remainder-manifest p { margin: 6px 0 12px; font-size: 14px; line-height: 1.6; }
 .door-manifest-scroll { overflow-x: auto; }
 .door-remainder-manifest table { width: 100%; border-collapse: collapse; table-layout: fixed; }

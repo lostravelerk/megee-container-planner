@@ -9,7 +9,7 @@ export type ProductProfile = ShippingLine & { revision: number };
 export type ShippingPallet = { id: string; number: string; containerNo: string; cartonIds: string[];
   baseL?: NumericInput; baseW?: NumericInput; baseH?: NumericInput;
   l: NumericInput; w: NumericInput; h: NumericInput; tareKg: NumericInput; extraKg: NumericInput; maxGrossKg: NumericInput };
-export type Shipment = { schemaVersion: 1; id: string; revision: number; reference: string; customer: string;
+export type Shipment = { schemaVersion: 1; weightBasis?: 'standard-carton-1kg'; id: string; revision: number; reference: string; customer: string;
   order: string; destination: string; date: string; lines: ShippingLine[]; pallets: ShippingPallet[];
   status: 'draft' | 'confirmed'; confirmedAt?: string };
 export type ShipmentCarton = { id: string; lineId: string; code: string; name: string; lot: string; number: number;

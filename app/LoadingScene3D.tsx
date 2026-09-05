@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { expandCargo } from "../lib/cargoGeometry.js";
+import { createContainerReference } from "../lib/containerReference.js";
 import type { CargoUnit } from "../lib/cargoGeometry.js";
 import type { ContainerPlan } from "../lib/mixedPacking";
 import type { Dimensions, Language } from "./plannerTypes";
@@ -51,7 +52,9 @@ function cartonMaterials(color: string, code: string, ea: number, textures: THRE
     const canvas = document.createElement("canvas");
     canvas.width = 768; canvas.height = 512;
     const c = canvas.getContext("2d")!;
-    c.fillStyle = "#dfcfb5"; c.fillRect(0, 0, 768, 512);
+    // Muted SKU identification tint; identical geometry and printed quantities.
+    c.fillStyle = new THREE.Color(color).lerp(new THREE.Color("#f7f4ed"), .30).getStyle();
+    c.fillRect(0, 0, 768, 512);
     // Deterministic fine kraft grain. No texture download or per-carton bitmap.
     let seed = 831;
     for (let n = 0; n < 8500; n++) {
@@ -71,7 +74,8 @@ function cartonMaterials(color: string, code: string, ea: number, textures: THRE
       drawMegee(c, 35, 65);
       c.font = "700 32px Arial"; c.fillStyle = "#2b3f4b"; c.fillText(code, 35, 177, 290);
     } else {
-      c.fillStyle = "#f4f1e9"; c.fillRect(54, 57, 660, 398);
+      c.fillStyle = new THREE.Color(color).lerp(new THREE.Color("#ffffff"), .62).getStyle();
+      c.fillRect(54, 57, 660, 398);
       c.fillStyle = color; c.fillRect(54, 57, 660, 14);
       drawMegee(c, 83, 91);
       c.fillStyle = "#293b48"; c.font = "700 64px Arial, sans-serif";
@@ -103,6 +107,7 @@ export default function LoadingScene3D({
   const [mounted, setMounted] = useState(eager);
   const [sceneError, setSceneError] = useState("");
   const [activeView, setActiveView] = useState<View>("perspective");
+  const activeViewRef = useRef<View>("perspective");
   const [interaction, setInteraction] = useState(false);
   const interactionRef = useRef(false);
   interactionRef.current = interaction;
@@ -111,6 +116,11 @@ export default function LoadingScene3D({
   const en = language === "en";
   const shown = Math.min(geometry.positions.length, visiblePositionCount ?? geometry.positions.length);
   const effectiveLength = container.l - doorClearance;
+  const selectView = (view: View) => {
+    activeViewRef.current = view;
+    setActiveView(view);
+    runtimeRef.current?.select(view);
+  };
 
   useEffect(() => {
     if (eager) { queueMicrotask(() => setMounted(true)); return; }
@@ -143,12 +153,12 @@ export default function LoadingScene3D({
     try {
       const scene = new THREE.Scene();
       scene.background = new THREE.Color("#f4f5f6");
-      // Calibrated reference planes only; no decorative container-shell model.
+      // Three measured-interior reference surfaces, never a closed shell.
       renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
       renderer.toneMappingExposure = .86;
-      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5));
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.shadowMap.autoUpdate = false;
@@ -219,13 +229,16 @@ export default function LoadingScene3D({
       const ground = new THREE.Mesh(groundGeometry, groundMaterial);
       ground.rotation.x = -Math.PI / 2; ground.position.y = -.006; ground.receiveShadow = true;
       scene.add(ground);
+      const dimensionGroups: { group: THREE.Group; axis: "l" | "w" | "h" }[] = [];
       if (!palletOnly) {
-        const floorGeometry = new THREE.PlaneGeometry(size.x, size.z);
-        geometries.add(floorGeometry);
-        const floorMaterial = new THREE.MeshStandardMaterial({ color: "#e2e8ec", roughness: 1 });
-        materials.add(floorMaterial);
-        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-        floor.rotation.x = -Math.PI / 2; floor.position.y = -.009; scene.add(floor);
+        const reference = createContainerReference({ l: container.l, w: container.w, h: container.h });
+        reference.traverse(object => {
+          if (object instanceof THREE.Mesh) {
+            geometries.add(object.geometry);
+            (Array.isArray(object.material) ? object.material : [object.material]).forEach(m => materials.add(m));
+          }
+        });
+        scene.add(reference);
         const lines = (points: number[][], color: string) => {
           const geometry = new THREE.BufferGeometry().setFromPoints(points.map(p => new THREE.Vector3(...p)));
           const material = new THREE.LineBasicMaterial({ color, transparent: true, opacity: .7 });
@@ -241,7 +254,33 @@ export default function LoadingScene3D({
         const openingW = (doorWidth ?? container.doorW ?? container.w) / 1000;
         const openingH = (doorHeight ?? container.doorH ?? container.h) / 1000;
         lines([[x1,0,-openingW/2],[x1,openingH,-openingW/2],[x1,openingH,openingW/2],[x1,0,openingW/2]], "#b58644");
+        // Dimension lines terminate at the same effective bounds used by the
+        // solver. Labels are scene objects, so all report plates retain them.
+        const dimension = (axis: "l" | "w" | "h", a: number[], b: number[], at: number[], value: number) => {
+          const group = new THREE.Group(); group.name = `effective-dimension-${axis}`;
+          const p = new THREE.Vector3(...a), q = new THREE.Vector3(...b);
+          const tick = axis === "h" ? new THREE.Vector3(0,0,.07) : new THREE.Vector3(0,.07,.07);
+          const lineGeometry = new THREE.BufferGeometry().setFromPoints([p,q,p.clone().sub(tick),p.clone().add(tick),q.clone().sub(tick),q.clone().add(tick)]);
+          const lineMaterial = new THREE.LineBasicMaterial({ color: "#1b6491", depthTest: false });
+          geometries.add(lineGeometry); materials.add(lineMaterial); group.add(new THREE.LineSegments(lineGeometry,lineMaterial));
+          const label = document.createElement("canvas"); label.width=1024; label.height=128;
+          const c=label.getContext("2d")!;
+          c.fillStyle="#f8fbfd"; c.fillRect(0,0,1024,128);
+          c.fillStyle="#183e5d"; c.font="600 64px Arial, sans-serif"; c.textAlign="center"; c.textBaseline="middle";
+          c.fillText(`${axis.toUpperCase()}  ${value.toLocaleString("en-US",{maximumFractionDigits:2})} mm`,512,66,960);
+          const texture=new THREE.CanvasTexture(label); texture.colorSpace=THREE.SRGBColorSpace; textures.push(texture);
+          const material=new THREE.SpriteMaterial({map:texture,depthTest:false,toneMapped:false}); materials.add(material);
+          const sprite=new THREE.Sprite(material); sprite.position.set(...at as [number,number,number]);
+          const factor=Math.max(.8,Math.min(1.5,size.x/8)); sprite.scale.set(1.6*factor,.20*factor,1); sprite.renderOrder=20;
+          group.add(sprite); scene.add(group); dimensionGroups.push({group,axis});
+        };
+        dimension("l",[x0,-.17,z1+.28],[end,-.17,z1+.28],[(x0+end)/2,-.32,z1+.35],container.l-doorClearance);
+        dimension("w",[x1+.23,-.17,z0+inset],[x1+.23,-.17,z1-inset],[x1+.35,-.34,0],container.w-sideClearance*2);
+        dimension("h",[x1+.23,0,z1+.30],[x1+.23,height,z1+.30],[x1+.52,height/2,z1+.52],container.h-topClearance);
       }
+      const showDimensions = (view: View) => dimensionGroups.forEach(({group,axis}) => {
+        group.visible = view === "perspective" || (view === "top" ? axis !== "h" : view === "side" ? axis !== "w" : axis !== "l");
+      });
       scene.add(new THREE.HemisphereLight("#fffdfa", "#b7bcc1", 1.5));
       const key = new THREE.DirectionalLight("#fff8ed", 2.2);
       key.position.set(-size.x * .15, 16, 2); key.castShadow = true;
@@ -263,7 +302,7 @@ export default function LoadingScene3D({
       controls.minZoom = .35; controls.maxZoom = 7;
       controls.minPolarAngle = 0; controls.maxPolarAngle = Math.PI * .92;
       controls.enablePan = true; controls.zoomToCursor = true;
-      let currentView: View = "perspective", adjusted = false;
+      let currentView: View = activeViewRef.current, adjusted = false;
       const offsets: Record<View, THREE.Vector3> = {
         perspective: new THREE.Vector3(1.05, .8, 1.65),
         top: new THREE.Vector3(0, 1, 0),
@@ -276,8 +315,9 @@ export default function LoadingScene3D({
         cam.lookAt(target); cam.updateMatrixWorld();
         // Fit every physical cargo corner, not an invented container frame.
         const projected = new THREE.Box3();
-        for (const x of [-size.x / 2, size.x / 2]) for (const y of [0, size.y])
-          for (const z of [-size.z / 2, size.z / 2])
+        const pad = palletOnly ? .05 : .8;
+        for (const x of [-size.x / 2-pad, size.x / 2+pad]) for (const y of [-pad/2, size.y+pad/2])
+          for (const z of [-size.z / 2-pad, size.z / 2+pad])
             projected.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(cam.matrixWorldInverse));
         const spans = projected.getSize(new THREE.Vector3());
         const halfH = Math.max(spans.y, spans.x / aspect) * .57;
@@ -286,8 +326,9 @@ export default function LoadingScene3D({
         cam.zoom = 1; cam.updateProjectionMatrix();
       };
       const select = (view: View) => {
-        currentView = view; adjusted = false;
+        currentView = view; activeViewRef.current = view; adjusted = false;
         ground.visible = view === "perspective";
+        showDimensions(view);
         controls!.enableRotate = view === "perspective";
         const dimensions = renderer!.getSize(new THREE.Vector2());
         pose(camera, view, dimensions.x / dimensions.y);
@@ -332,15 +373,18 @@ export default function LoadingScene3D({
         (["perspective", "top", "side", "door"] as const).forEach(view => {
           const aspect = view === "perspective" ? 16 / 9 : view === "top"
             ? size.x / size.z : view === "side" ? size.x / size.y : size.z / size.y;
-          const exportWidth = 1800, exportHeight = Math.max(300, Math.min(1800, Math.round(exportWidth / aspect)));
+          const exportWidth = view === "door" ? 1800 : 3000;
+          const exportHeight = Math.max(480, Math.min(2000, Math.round(exportWidth / aspect)));
           renderer!.setSize(exportWidth, exportHeight, false);
           const exportCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, .01, 100);
           pose(exportCamera, view, exportWidth / exportHeight);
           ground.visible = view === "perspective";
+          showDimensions(view);
           renderer!.render(scene, exportCamera);
-          snapshots[view] = canvas.toDataURL("image/jpeg", .94);
+          snapshots[view] = canvas.toDataURL("image/jpeg", .97);
         });
         ground.visible = currentView === "perspective";
+        showDimensions(currentView);
         renderer!.setPixelRatio(ratio); renderer!.setSize(previousSize.x, previousSize.y, false);
         reveal(visibleRef.current ?? geometry.positions.length);
         onSnapshotsRef.current(snapshots); dirty = true;
@@ -358,24 +402,25 @@ export default function LoadingScene3D({
 
   return <section ref={sectionRef} className="loading-scene-3d" aria-label={en ? "Interactive cargo view" : "交互式货物装柜实景"}>
     <div className="loading-scene-heading">
-      <div><span>MEGEE · CARGO STUDIO / 6.1</span>
+      <div><span>MEGEE · CARGO STUDIO / 6.2</span>
         <h4>{palletOnly ? en ? "Pallet packing" : "塑料托盘 · 排箱实景" : en ? "Inside the load" : "货物装柜实景"}</h4>
-        <p>{palletOnly ? en ? "Actual carton coordinates · standard pallet template" : "真实箱位坐标 · 标准组托模板" : en ? "Grey: internal floor · blue: effective envelope · amber: door opening" : "灰色：柜内地面参照 · 蓝色：有效装载边界 · 琥珀色：门洞参照"}</p>
-      </div>
-      <div className="loading-scene-actions"><span>{interaction ? en ? "Interaction enabled; standard views lock rotation" : "已开启模型操作；标准三视图锁定旋转" : en ? "Page scrolling does not move the model" : "默认滚动网页，不缩放模型"}</span>
-        <div className="loading-scene-view-switch" role="group" aria-label={en ? "Standard camera views" : "标准观察视角"}>
-          {(["perspective", "top", "side", "door"] as const).map(view =>
-            <button type="button" key={view} aria-pressed={activeView === view} className={activeView === view ? "active" : ""}
-              onClick={() => runtimeRef.current?.select(view)}>
-              {({ perspective: en ? "3D" : "立体", top: en ? "TOP" : "俯视", side: en ? "FRONT" : "正视", door: en ? "DOOR" : "门视" })[view]}
-            </button>)}
-        </div>
+        <p>{palletOnly ? en ? "Actual carton coordinates · standard pallet template" : "真实箱位坐标 · 标准组托模板" : en ? "Solid references: closed front, floor and far wall. Roof, near wall and door end remain open." : "实体参照：靠车头前壁、箱底、远侧壁；顶面、近侧面及柜门端敞开。"}</p>
       </div>
     </div>
     <div className="loading-scene-scale"><b>{palletOnly ? en ? "LOADED UNIT" : "组托设计外廓" : en ? "EFFECTIVE LOADING SPACE" : "有效装载空间 · 长 × 宽 × 高"}</b>
       <span>{effectiveLength.toLocaleString()} × {(container.w - sideClearance * 2).toLocaleString()} × {(container.h - topClearance).toLocaleString()} mm</span>
     </div>
-    <div className="scene-manipulation-controls"><button aria-pressed={interaction} onClick={() => setInteraction(v => !v)}>{interaction ? en ? "Finish interaction" : "结束模型操作" : en ? "Interact with model" : "操作模型"}</button><button aria-label={en ? "Zoom in" : "放大模型"} onClick={() => runtimeRef.current?.zoom(1.2)}>＋</button><button aria-label={en ? "Zoom out" : "缩小模型"} onClick={() => runtimeRef.current?.zoom(1/1.2)}>−</button><button onClick={() => runtimeRef.current?.select(activeView)}>{en ? "Fit view" : "完整显示"}</button></div>
+    <div className="scene-camera-toolbar">
+      <div className="scene-camera-presets" role="group" aria-label={en ? "3D and three orthographic views" : "立体及三视图切换"}>
+        {(["perspective", "top", "side", "door"] as const).map(view =>
+          <button type="button" key={view} data-scene-view={view} aria-pressed={activeView === view}
+            onClick={() => selectView(view)}>
+            {({ perspective: en ? "3D" : "立体", top: en ? "Top view" : "俯视图", side: en ? "Side view" : "侧视图", door: en ? "Door view" : "门视图" })[view]}
+          </button>)}
+      </div>
+      <div className="scene-manipulation-controls"><button type="button" aria-pressed={interaction} onClick={() => setInteraction(v => !v)}>{interaction ? en ? "Finish interaction" : "结束模型操作" : en ? "Interact with model" : "操作模型"}</button><button type="button" aria-label={en ? "Zoom in" : "放大模型"} onClick={() => runtimeRef.current?.zoom(1.2)}>＋</button><button type="button" aria-label={en ? "Zoom out" : "缩小模型"} onClick={() => runtimeRef.current?.zoom(1/1.2)}>−</button><button type="button" onClick={() => selectView(activeView)}>{en ? "Fit view" : "完整显示"}</button></div>
+      <p>{interaction ? en ? "Interaction enabled; standard views lock rotation" : "已开启模型操作；标准三视图锁定旋转" : en ? "Scroll the page normally. Select “Interact with model” to rotate or zoom." : "默认滚动网页；点击“操作模型”后才允许旋转或滚轮缩放。"}</p>
+    </div>
     <div className={`loading-scene-stage view-${activeView}`}>
       <canvas ref={canvasRef} style={{ touchAction: interaction ? "none" : "auto" }} aria-label={en ? "Actual carton and pallet geometry" : "按实际坐标生成的纸箱和托盘"} />
       {sceneError ? <div className="loading-scene-error"><b>{en ? "3D unavailable" : "三维预览暂不可用"}</b><span>{sceneError}</span></div> : null}
@@ -389,9 +434,10 @@ export default function LoadingScene3D({
     <div className="loading-scene-legend">
       {plan.blocks.map((b, i) => <span key={b.item.id}><i style={{ backgroundColor: SCENE_COLORS[i % SCENE_COLORS.length] }} />
         <b>{b.item.code || b.item.name}</b>{b.loadedBoxes.toLocaleString()} BOX</span>)}
-      <em>{en ? "Kraft cartons · SKU colour labels · red tape = partial carton. "
-        : "牛皮纸箱 · SKU 色签 · 红色胶带标记尾箱。"}
+      <em>{en ? "SKU colours are identification tints, not actual packaging print colours. Red tape = partial carton. "
+        : "外箱颜色仅用于区分 SKU，不代表实物印刷色；红色胶带标记尾箱。"}
         {doorWidth && doorHeight && !palletOnly ? (en ? "Door: " : "参考门洞：") + doorWidth + " × " + doorHeight + " mm。" : ""}
+        {!palletOnly ? (en ? "Reference faces follow measured interior dimensions; surface ribs are illustrative. Blue = effective loading limits; amber = door aperture. " : "参照面按柜内尺寸绘制，波纹细节仅为示意；蓝色为有效装载边界，琥珀色为门洞。") : ""}
         {en ? "Packing sequence is not a collision-checked loading path." : "演示表示装载顺序，不代表已验证叉车或搬运路径。"}</em>
     </div>
   </section>;

@@ -38,8 +38,8 @@ test("keeps the v3 product boundary and saved-plan controls explicit", async () 
   const shell = await readFile(new URL("../app/LoadPlanner.tsx", import.meta.url), "utf8");
   const planner = await readFile(new URL("../app/MixedPlanner.tsx", import.meta.url), "utf8");
   const types = await readFile(new URL("../app/plannerTypes.ts", import.meta.url), "utf8");
-  assert.match(shell, /APP_VERSION = "6\.1\.0"/);
-  assert.match(shell, /ALGORITHM_VERSION = "MIX 6\.1"/);
+  assert.match(shell, /APP_VERSION = "6\.2\.0"/);
+  assert.match(shell, /ALGORITHM_VERSION = "MIX 6\.2"/);
   assert.match(shell, /PLAN_STORAGE_KEY = "megee-container-saved-plans-v3"/);
   assert.match(shell, /column-filter-button/);
   assert.match(shell, /HTML报告/);

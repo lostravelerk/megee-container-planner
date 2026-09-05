@@ -51,9 +51,11 @@ test("remainder look-ahead combines two SKUs in one door column without losing E
   assert.deepEqual(validateMixedPlan(JSON.parse(JSON.stringify(result))), { ok: true, errors: [] });
 });
 
-test("separate remainder columns are preferred when they fit", () => {
+test("mixed remainder columns compete even when separate columns fit, freeing door-end space", () => {
   const result = planMixedContainers([item("A", 4), item("B", 4)], { l: 400, w: 100, h: 303 }, config);
-  assert.equal(result.containers[0].stackSupport.conditionalStacks, 0);
+  assert.equal(result.containers[0].stackSupport.conditionalStacks, 1);
+  assert.equal(result.containers[0].usedLength,300);
+  assert.equal(result.plannedBoxes,8);
   assert.equal(validateMixedPlan(result).ok, true);
 });
 

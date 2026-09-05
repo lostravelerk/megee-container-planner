@@ -1,0 +1,47 @@
+.app-shell-v3 > div[hidden] { display:none!important; }
+.megee-identity { display:flex; align-items:center; gap:12px; color:#1d3747; flex-shrink:0; }
+.megee-identity svg { width:43px; height:43px; fill:none; stroke:currentColor; stroke-width:1.8; }
+.megee-identity span { display:grid; gap:4px; }
+.megee-identity b { font-size:23px; letter-spacing:.07em; white-space:nowrap; }
+.megee-identity em { font-size:17px; font-style:normal; letter-spacing:.03em; }
+.megee-identity small { font-size:11px; letter-spacing:.09em; color:#617585; }
+.planning-run-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px; }
+.planning-run-actions select { margin:0; width:auto; font-size:14px; }
+.planning-run-actions button { min-height:44px; padding:10px 16px; border:1px solid #b8cad9; border-radius:10px; background:white; color:#254d6d; font-size:15px; font-weight:600; }
+.planning-run-actions button.primary { background:#086fca; color:white; border-color:#086fca; }
+.planning-run-actions button:disabled { background:#e8edf2; color:#6a7c8b; border-color:#d0dae2; cursor:not-allowed; }
+.mixed-config-status { flex-direction:column; align-items:flex-start; }
+.customer-pallet-options { min-width:0; margin:20px 0; padding:20px; border:1px solid #c9d8e3; border-radius:16px; background:#fff; }
+.customer-pallet-options legend { padding:0 8px; color:#23445e; font-size:18px; font-weight:600; }
+.customer-pallet-options > div { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.customer-pallet-options label { display:flex; align-items:center; gap:14px; padding:20px; min-height:88px; border:1px solid #d4dee7; border-radius:12px; cursor:pointer; background:#f8fafc; }
+.customer-pallet-options label.selected { border-color:#086fca; background:#edf6ff; }
+.customer-pallet-options input { width:20px; height:20px; margin:0; flex-shrink:0; accent-color:#086fca; }
+.customer-pallet-options b { display:block; font-size:18px; }
+.customer-pallet-options small { display:block; font-size:15px; margin-top:6px; }
+.customer-pallet-options p,.pallet-policy-summary p { font-size:14px; line-height:1.7; color:#4a6274; margin:12px 0 0; }
+.pallet-policy-summary { margin:20px 0; padding:18px; border:1px solid #d4dee7; border-radius:12px; background:white; }
+.pallet-policy-summary h3 { margin:0 0 12px; font-size:18px; }
+.pallet-policy-table-wrap { overflow-x:auto; }
+.pallet-policy-summary table { width:100%; border-collapse:collapse; font-size:14px; }
+.pallet-policy-summary th,.pallet-policy-summary td { padding:12px; text-align:left; vertical-align:middle; border-bottom:1px solid #d4dee7; font-variant-numeric:tabular-nums; }
+.pallet-policy-summary th { background:#f2f6f9; font-weight:600; }
+.pallet-policy-summary th:first-child,.pallet-policy-summary td:first-child { min-width:90px; overflow-wrap:normal; }
+.scene-manipulation-controls { display:flex; gap:8px; padding:10px 20px; flex-wrap:wrap; border-bottom:1px solid #dce5ec; }
+.scene-manipulation-controls button { min-width:44px; min-height:44px; padding:8px 14px; border:1px solid #c9d6e0; border-radius:9px; background:white; color:#2c4c65; font-size:14px; }
+.scene-manipulation-controls button[aria-pressed=true] { background:#e7f2fd; border-color:#5d98c4; }
+.loading-scene-stage.view-top,.loading-scene-stage.view-side { height:clamp(240px,28vw,460px); }
+@media(max-width:1100px) { .app-header-v3 { flex-wrap:wrap; } .app-header-v3 nav { order:3; width:100%; margin:0; overflow:auto; } .app-header-actions { margin-left:auto; } }
+@media(max-width:650px) { .customer-pallet-options > div { grid-template-columns:1fr; } .customer-pallet-options { padding:14px; } .pallet-policy-summary table { min-width:680px; } }
+@media(max-width:600px) { .megee-identity b { font-size:19px; } .megee-identity small { font-size:10px; } .megee-identity svg { width:36px; height:36px; } }
+@media print {
+  .customer-pallet-options { display:none; }
+  .pallet-policy-summary { margin:3mm 0; padding:2mm; border:.4pt solid #bfcbd4; border-radius:0; break-inside:auto; }
+  .pallet-policy-summary h3 { font-size:11pt; break-after:avoid; }
+  .pallet-policy-table-wrap { overflow:visible; }
+  .pallet-policy-summary table { min-width:0; font-size:8.5pt; table-layout:auto; }
+  .pallet-policy-summary thead { display:table-header-group; }
+  .pallet-policy-summary tr { break-inside:avoid; }
+  .pallet-policy-summary th,.pallet-policy-summary td { padding:2mm 1.5mm; }
+  .pallet-policy-summary p { font-size:8pt; line-height:1.5; }
+}
