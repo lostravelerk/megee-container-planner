@@ -141,7 +141,7 @@ async function main() {
 
   const rows = [
     { series: "404", code: "PUMP-404-24", name: "404/24牙喷头", ea: 1000, l: 500, w: 400, h: 260 },
-    { series: "404", code: "COVER-404-24", name: "404/24牙外罩", ea: 630, l: 480, w: 380, h: 390 },
+    { series: "404", code: "COVER-404-24", name: "404/24牙外罩", ea: 600, l: 480, w: 380, h: 390 },
   ];
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
@@ -162,10 +162,10 @@ async function main() {
       const report = document.querySelector('.mixed-print-report');
       const quantities = [...document.querySelectorAll('[aria-label="产品数量"]')].slice(0,2).map((input) => input.value);
       const confirm = [...document.querySelectorAll('button')].find((button) => button.textContent.includes('保存方案'));
-      return report?.dataset.completeKits === '144000'
-        && report?.dataset.totalBoxes === '373'
-        && Math.abs(Number(report?.dataset.totalCbm) - 23.778144) < 0.000001
-        && quantities.every((value) => value === '144000')
+      return report?.dataset.completeKits === '138000'
+        && report?.dataset.totalBoxes === '368'
+        && Math.abs(Number(report?.dataset.totalCbm) - 23.537280) < 0.000001
+        && quantities.every((value) => value === '138000')
         && confirm && !confirm.disabled;
     })()`,
     "audited 20GP equal-component result",
@@ -203,7 +203,7 @@ async function main() {
   })()`);
   if (!preflight.ready || !preflight.printed || preflight.invalidText)
     throw new Error(`Report preflight failed: ${JSON.stringify(preflight)}`);
-  if (preflight.completeKits !== 144000 || preflight.totalEa !== 288000 || preflight.totalBoxes !== 373 || preflight.realisticViews !== 4 || preflight.perspectiveViews !== 1 || preflight.topViews !== 1 || preflight.sideViews !== 1 || preflight.endViews !== 1 || preflight.palletViews !== 0)
+  if (preflight.completeKits !== 138000 || preflight.totalEa !== 276000 || preflight.totalBoxes !== 368 || preflight.realisticViews !== 4 || preflight.perspectiveViews !== 1 || preflight.topViews !== 1 || preflight.sideViews !== 1 || preflight.endViews !== 1 || preflight.palletViews !== 0)
     throw new Error(`Report data/view audit failed: ${JSON.stringify(preflight)}`);
 
   await clickText("返回规划器");
@@ -228,7 +228,7 @@ async function main() {
   })()`);
   if (!packingPreflight.ready || !packingPreflight.printed || packingPreflight.productRows !== 2 || packingPreflight.allocationRows !== 2 || packingPreflight.invalidText)
     throw new Error(`Packing List preflight failed: ${JSON.stringify(packingPreflight)}`);
-  if (!packingPreflight.text.includes('288,000') || !packingPreflight.text.includes('373') || !packingPreflight.text.includes('23.78'))
+  if (!packingPreflight.text.includes('276,000') || !packingPreflight.text.includes('368') || !packingPreflight.text.includes('23.54'))
     throw new Error(`Packing List totals audit failed: ${JSON.stringify(packingPreflight)}`);
 
   await client.send("Emulation.setEmulatedMedia", { media: "print" });

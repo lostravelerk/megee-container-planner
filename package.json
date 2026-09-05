@@ -1,6 +1,6 @@
 {
   "name": "megee-container-planner",
-  "version": "3.4.0",
+  "version": "6.0.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -11,6 +11,8 @@
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern tmp --ignore-pattern output",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm run lint && npm test",
     "qa:pdf": "node scripts/qa-pdf-v3.mjs",
     "db:generate": "drizzle-kit generate"
   },

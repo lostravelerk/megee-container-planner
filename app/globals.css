@@ -2819,10 +2819,10 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
   .mixed-print-report .report-execution-fields { gap: 2mm 5mm; padding: 2.2mm 3mm; }
   .mixed-print-report .report-execution-fields div { min-height: 6.5mm; }
   .mixed-print-report .report-execution-record .mixed-verification-grid { margin-top: 3mm; padding-block: 2.2mm; }
-  /* The print report keeps a compact release checklist and sign-off block.
-     Free-form deviation details belong in the shared HTML record; omitting
-     the large empty writing panel prevents a mostly blank trailing PDF page. */
-  .mixed-print-report .report-execution-notes { display: none !important; }
+  /* Keep the release decision and a short deviation field without reserving
+     most of a blank page for handwriting. */
+  .mixed-print-report .report-execution-notes { display: grid; flex: none; min-height: 0; margin-top: 3mm; }
+  .mixed-print-report .report-execution-notes article:first-child > span { flex: none; min-height: 5mm; }
   .mixed-print-report .report-execution-record .report-signoff { margin-top: 3mm; padding-top: 0; }
   /* Chrome fragments fixed elements unpredictably inside paged documents.
      Use one formal in-flow footer on the signature sheet instead. */
@@ -2838,4 +2838,74 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
   .packing-list-signoff span,
   .packing-list-order-meta span { border-bottom-width: .25mm; border-bottom-color: #6e8391; }
   .mixed-print-report .report-running-footer { display: none !important; }
+}
+
+.door-remainder-manifest { margin: 16px 0; color: #253e50; }
+.pallet-real-views { padding: 16px; min-width: 0; }
+.pallet-recommendation { display: flex; flex-wrap: wrap; gap: 8px; color: #304453; font-size: 15px; line-height: 1.6; }
+.pallet-photo-plates { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.pallet-photo-plates figure { margin: 0; border: 1px solid #dbe0e4; border-radius: 12px; overflow: hidden; }
+.pallet-photo-plates img { width: 100%; height: 230px; object-fit: contain; display: block; background: #f4f5f6; }
+.pallet-photo-plates figcaption { border-top: 1px solid #dbe0e4; padding: 10px; font-size: 13px; }
+.pallet-approval-note { font-size: 14px; line-height: 1.7; color: #665847; }
+.loading-scene-heading p { max-width: 720px; }
+.loading-scene-scale b { font-size: 11px; }
+.loading-scene-scale span { font-size: 13px; }
+.loading-scene-3d > .loading-scene-scale {
+  position: static; max-width: none; margin: 0; padding: 12px 18px;
+  border: 0; border-bottom: 1px solid #dbe0e4; border-radius: 0;
+  background: #f7f9fa; box-shadow: none; backdrop-filter: none;
+}
+.loading-scene-status { display: flex; justify-content: space-between; gap: 10px; padding: 9px 14px; background: #f7f9fa; }
+.loading-scene-status .loading-scene-badge { position: static; box-shadow: none; backdrop-filter: none; }
+.loading-scene-legend em { font-size: 12px; line-height: 1.6; }
+.report-scene-snapshot img { object-fit: contain !important; aspect-ratio: auto; }
+@media screen and (max-width: 700px) {
+  .pallet-photo-plates { grid-template-columns: 1fr; }
+  .loading-scene-heading { flex-direction: column; gap: 12px; }
+  .loading-scene-actions { width: 100%; }
+  .loading-scene-view-switch { width: 100%; }
+  .loading-scene-view-switch button { flex: 1; }
+  .loading-scene-scale { max-width: calc(100% - 24px); }
+  .loading-scene-scale span { font-size: 11px; }
+}
+@media print {
+  /* Continuous plates: don't move an entire cargo/pallet chapter to a new page. */
+  .mixed-print-report .report-scene-snapshots { display: block !important; break-inside: auto; page-break-inside: auto; }
+  .mixed-print-report .report-scene-snapshot { break-inside: avoid; margin: 2.5mm 0; }
+  .mixed-print-report .report-scene-snapshot img { height: auto; max-height: 62mm; object-fit: contain !important; }
+  .mixed-print-report .report-scene-perspective img { height: 64mm; }
+  .mixed-print-report .report-scene-door img { height: 55mm; }
+  .mixed-print-report .report-scene-snapshot figcaption b { font-size: 8pt; }
+  .mixed-print-report .report-scene-snapshot figcaption span { font-size: 7pt; }
+  .mixed-print-report .pallet-pattern-grid { display: block; }
+  .mixed-print-report .pallet-pattern-card { break-inside: auto; page-break-inside: auto; overflow: visible; margin: 3mm 0; }
+  .mixed-print-report .pallet-pattern-card > header { break-after: avoid; }
+  .mixed-print-report .pallet-real-views { padding: 2mm; }
+  .mixed-print-report .pallet-real-views .loading-scene-3d { display: none !important; }
+  .pallet-photo-plates { gap: 2mm; break-inside: avoid; }
+  .pallet-photo-plates img { height: 50mm; }
+  .pallet-photo-plates figcaption { font-size: 7pt; padding: 1.5mm; }
+  .pallet-recommendation, .pallet-approval-note { font-size: 8pt; line-height: 1.5; margin: 1.5mm 0; }
+  .mixed-print-report .pallet-pattern-body { break-inside: avoid; }
+}
+.door-remainder-manifest h4 { margin: 0 0 8px; font-size: 16px; }
+.door-remainder-manifest p { margin: 6px 0 12px; font-size: 14px; line-height: 1.6; }
+.door-manifest-scroll { overflow-x: auto; }
+.door-remainder-manifest table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.door-remainder-manifest th, .door-remainder-manifest td {
+  border: 1px solid #cbd5de; padding: 9px 10px; text-align: left; vertical-align: middle;
+  font-size: 14px; line-height: 1.5; overflow-wrap: break-word;
+}
+.door-remainder-manifest th { background: #edf2f6; font-weight: 600; }
+@media (max-width: 700px) { .door-remainder-manifest table { min-width: 700px; } }
+@media print {
+  .door-remainder-manifest { break-inside: auto !important; margin: 3mm 0; }
+  .door-remainder-manifest h4 { font-size: 10pt; break-after: avoid; }
+  .door-remainder-manifest p { font-size: 8pt; line-height: 1.4; margin: 1.5mm 0; }
+  .door-manifest-scroll { overflow: visible; }
+  .door-remainder-manifest table { min-width: 0; width: 100%; break-inside: auto !important; }
+  .door-remainder-manifest thead { display: table-header-group; }
+  .door-remainder-manifest tr { break-inside: avoid; }
+  .door-remainder-manifest th, .door-remainder-manifest td { padding: 1.5mm; font-size: 8pt; border-width: .2mm; }
 }

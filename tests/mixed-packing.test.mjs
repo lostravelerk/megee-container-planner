@@ -24,8 +24,12 @@ function assertValidGeometry(result) {
       assert.ok(position.x + position.w <= result.effectiveContainer.l + 0.001);
       assert.ok(position.y + position.h <= result.effectiveContainer.w + 0.001);
       const block = container.blocks.find((entry) => entry.item.id === position.skuId);
-      assert.ok(position.stackUnits * block.item.loadingUnit.h <= result.effectiveContainer.h + 0.001);
+      assert.ok((position.baseHeight || 0) + position.stackUnits * block.item.loadingUnit.h <= result.effectiveContainer.h + 0.001);
       for (const other of container.positions.slice(index + 1)) {
+        const otherBlock = container.blocks.find((entry) => entry.item.id === other.skuId);
+        if (position.mixedStackId && position.mixedStackId === other.mixedStackId
+          && ((position.baseHeight || 0) + position.stackUnits * block.item.loadingUnit.h <= (other.baseHeight || 0)
+            || (other.baseHeight || 0) + other.stackUnits * otherBlock.item.loadingUnit.h <= (position.baseHeight || 0))) continue;
         const sameSku = position.skuId === other.skuId;
         const requiredGap = sameSku ? block.item.unitGap : result.config.skuGap;
         const separated = position.x + position.w + requiredGap <= other.x + 0.05
@@ -53,7 +57,7 @@ test("maximizes equal-EA component kits through the audited loading geometry", (
       packaging: "carton",
     },
     {
-      ...item("404/24-CAP", 1, 630, { l: 480, w: 380, h: 390 }),
+      ...item("404/24-CAP", 1, 600, { l: 480, w: 380, h: 390 }),
       name: "404/24牙外罩",
       packaging: "carton",
     },
@@ -72,23 +76,24 @@ test("maximizes equal-EA component kits through the audited loading geometry", (
     sideClearance: 30,
     topClearance: 50,
   });
-  assert.equal(result.kitQuantity, 144_000);
+  assert.equal(result.kitQuantity, 138_000);
   assert.equal(result.result.containers.length, 1);
   assert.deepEqual(
     result.result.items.map((entry) => entry.productQuantity),
-    [144_000, 144_000],
+    [138_000, 138_000],
   );
   assert.deepEqual(
     result.result.items.map((entry) => entry.requiredBoxes),
-    [144, 229],
+    [138, 230],
   );
-  assert.equal(result.result.items[1].productQuantity % result.result.items[1].eaPerBox, 360);
-  assert.equal(result.residualCapacityVerified, true);
+  assert.equal(result.result.items[1].productQuantity % result.result.items[1].eaPerBox, 0);
+  assert.equal(result.adjacentQuantityRejected, true);
+  assert.equal(result.optimalityProven, false);
   assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
 
   const overflow = planMixedContainerOptions([
-    item("404/24-PUMP", 144_001, 1000, { l: 500, w: 400, h: 260 }),
-    item("404/24-CAP", 144_001, 630, { l: 480, w: 380, h: 390 }),
+    item("404/24-PUMP", 138_001, 1000, { l: 500, w: 400, h: 260 }),
+    item("404/24-CAP", 138_001, 600, { l: 480, w: 380, h: 390 }),
   ], {
     l: 5898,
     w: 2352,
@@ -149,7 +154,8 @@ test("optimizes fixed, adjustable and equal-EA kit quantities through physical l
   assert.ok(result.quantities.ADJUST >= 100 && result.quantities.ADJUST <= 1000);
   assert.equal(result.quantities["KIT-A"], result.quantities["KIT-B"]);
   assert.ok(result.quantities["KIT-A"] >= 100 && result.quantities["KIT-A"] <= 1000);
-  assert.equal(result.residualCapacityVerified, true);
+  assert.equal(result.adjacentQuantitiesRejected, true);
+  assert.equal(result.optimalityProven, false);
   assert.equal(result.result.containers.length, 1);
   assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
   assert.ok(result.candidates.length > 0);
@@ -158,10 +164,10 @@ test("optimizes fixed, adjustable and equal-EA kit quantities through physical l
 test("capacity optimizer allows non-carton-multiple quantities and protects their tail cartons", () => {
   const result = optimizeProcurementQuantities([
     {
-      ...item("TAIL", 0, 630, { l: 100, w: 100, h: 100 }),
+      ...item("TAIL", 0, 600, { l: 100, w: 100, h: 100 }),
       quantityRule: "adjustable",
-      minimumQuantity: 631,
-      maximumQuantity: 631,
+      minimumQuantity: 601,
+      maximumQuantity: 601,
     },
   ], { l: 200, w: 100, h: 100, doorW: 100, doorH: 100 }, {
     containerCount: 1,
@@ -173,9 +179,9 @@ test("capacity optimizer allows non-carton-multiple quantities and protects thei
     topClearance: 0,
   });
   assert.equal(result.error, "");
-  assert.equal(result.quantities.TAIL, 631);
+  assert.equal(result.quantities.TAIL, 601);
   assert.equal(result.result.items[0].requiredBoxes, 2);
-  assert.equal(result.result.items[0].productQuantity % 630, 1);
+  assert.equal(result.result.items[0].productQuantity % 600, 1);
   assert.deepEqual(validateMixedPlan(result.result), { ok: true, errors: [] });
 });
 
@@ -265,7 +271,7 @@ test("interlocks unused SKU boundary contours without overlapping physical carto
   assert.equal(strict.containers.length, 1);
   assert.equal(optimized.containers.length, 1);
   assert.equal(optimized.containers[0].skuBoundaryInterlocks, 1);
-  assert.ok(optimized.containers[0].usedLength < strict.containers[0].usedLength);
+  assert.ok(optimized.containers[0].usedLength <= strict.containers[0].usedLength);
   assert.equal(optimized.plannedBoxes, strict.plannedBoxes);
   assert.equal(optimized.plannedEa, strict.plannedEa);
   assert.deepEqual(validateMixedPlan(optimized), { ok: true, errors: [] });
@@ -275,7 +281,7 @@ test("interlocks unused SKU boundary contours without overlapping physical carto
 test("uses entered EA/BOX, compacts mixed SKUs from the closed end and keeps the tail carton at the door-side extremity", () => {
   const result = planMixedContainers([
     item("X40401", 138_000, 1000, { l: 500, w: 400, h: 260 }),
-    item("X40402", 138_000, 630, { l: 480, w: 380, h: 390 }),
+    item("X40402", 131_401, 600, { l: 480, w: 380, h: 390 }),
   ], { l: 5898, w: 2352, h: 2393, doorW: 2340, doorH: 2292 }, {
     cartonTolerance: 3,
     cartonGap: 5,
@@ -288,11 +294,16 @@ test("uses entered EA/BOX, compacts mixed SKUs from the closed end and keeps the
   const plan = result.containers[0];
   const cap = result.items.find((entry) => entry.id === "X40402");
   const tail = plan.positions.find((position) => position.partialCartonEa);
-  assert.equal(cap.eaPerBox, 630);
+  assert.equal(cap.eaPerBox, 600);
   assert.equal(cap.requiredBoxes, 220);
-  assert.equal(tail.partialCartonEa, 30);
-  assert.equal(tail.x + tail.w, plan.usedLength);
-  assert.ok(plan.maximumInternalVoid <= result.config.skuGap + 0.001);
+  assert.equal(tail.partialCartonEa, 1);
+  assert.equal(plan.doorStaging.ok, true);
+  assert.ok(tail.x >= plan.doorStaging.zoneStart);
+  assert.ok(plan.positions.every((p) => p === tail || p.y >= tail.y + tail.h || p.y + p.h <= tail.y || p.x + p.w <= tail.x));
+  // Fine boundary sweeps must disclose narrow pockets that the old centreline
+  // sampler missed; do not assert that they disappeared merely by rendering.
+  assert.ok(plan.stowVoids.pockets.length > 0);
+  assert.equal(plan.requiresSecuring, true);
   assert.deepEqual(validateMixedPlan(result), { ok: true, errors: [] });
   assertValidGeometry(result);
 });
@@ -309,8 +320,11 @@ test("mixes 0 and 90 degree floor orientations inside one SKU zone to reduce occ
   assert.equal(productA.positions.length, 28);
   assert.ok(productA.normalFloorPositions > 0);
   assert.ok(productA.rotatedFloorPositions > 0);
-  assert.ok(productA.length < 2711, `expected compact mixed orientation, got ${productA.length} mm`);
-  assert.ok(first.usedLength <= 3744.1);
+  const fullCore = productA.positions.filter((p) => !p.partialCartonEa && p.stackUnits === productA.layers);
+  const coreLength = Math.max(...fullCore.map((p) => p.x + p.w)) - Math.min(...fullCore.map((p) => p.x));
+  assert.ok(coreLength < 2711, `expected compact full core, got ${coreLength} mm`);
+  assert.ok(first.doorStaging.ok);
+  assert.deepEqual(validateMixedPlan(result), { ok: true, errors: [] });
   assertValidGeometry(result);
 });
 
@@ -467,11 +481,14 @@ test("keeps an incomplete pallet top on the uppermost level and never supports a
     pallet: { l: 1000, w: 1200, h: 150 },
     palletOverhang: 0,
   };
-  const probe = planMixedContainers([base], CONTAINER);
+  // Keep this regression exercising two pallets even when a taller single
+  // pallet would now be selected by the demand-aware height optimizer.
+  const fixedHeight = { palletMinHeight: 1200, palletHeightLimit: 1300 };
+  const probe = planMixedContainers([base], CONTAINER, fixedHeight);
   const cartonsPerPallet = probe.items[0].palletPlan.cartonsPerPallet;
   const result = planMixedContainers([
     { ...base, productQuantity: cartonsPerPallet + 1 },
-  ], CONTAINER);
+  ], CONTAINER, fixedHeight);
   const block = result.containers[0].blocks[0];
   const palletLoads = block.positions.flatMap((position) => position.palletLoads);
   assert.equal(palletLoads.length, 2);

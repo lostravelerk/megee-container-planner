@@ -89,6 +89,10 @@ function sanitizePayload(input: unknown) {
         palletGap: finiteNumber(config.palletGap, 0, 1000),
         palletTolerance: finiteNumber(config.palletTolerance, 0, 200),
         edgeInset: finiteNumber(config.edgeInset, 0, 200),
+        separatorThickness: config.separatorThickness == null ? 3 : finiteNumber(config.separatorThickness, 0, 100),
+        palletMinHeight: config.palletMinHeight == null ? 1200 : finiteNumber(config.palletMinHeight, 1, 4000),
+        palletHeightLimit: config.palletHeightLimit == null ? 1800 : finiteNumber(config.palletHeightLimit, 1, 4000),
+        allowDoubleStack: config.allowDoubleStack !== false,
         allowSkuInterlock: config.allowSkuInterlock !== false,
         layoutStrategy: ["maximum", "entered-order", "clear-zones"].includes(text(config.layoutStrategy))
           ? text(config.layoutStrategy)

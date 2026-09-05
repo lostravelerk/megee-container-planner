@@ -3,8 +3,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import {
   cartonsForDemand,
-  optimizeProcurementQuantities,
-  planMixedContainerOptions,
   planMixedContainers,
   validateMixedPlan,
 } from "../lib/mixedPacking.js";
@@ -18,6 +16,9 @@ import type {
   SavedPlanRecord,
 } from "./plannerTypes";
 import type { LoadingSceneSnapshots } from "./LoadingScene3D";
+import { usePlanningSearch } from "./usePlanningSearch";
+import PalletRealViews from "./PalletRealViews";
+import { occupiedPositionHeight } from "../lib/cargoGeometry.js";
 
 type MixedRow = PlannerRow;
 type SharedPlanPayload = {
@@ -97,9 +98,10 @@ function shortFingerprint(value: string) {
 
 function loadingSceneKey(
   containerType: string,
-  plan: { index: number; totalBoxes: number; totalEa: number; usedLength: number },
+  plan: ReturnType<typeof planMixedContainers>["containers"][number],
+  config: PlannerConfig,
 ) {
-  return `${containerType}-${plan.index}-${plan.totalBoxes}-${plan.totalEa}-${Math.round(plan.usedLength * 100)}`;
+  return `${containerType}-${plan.index}-${shortFingerprint(JSON.stringify({ config, positions: plan.positions, items: plan.blocks.map((b) => b.item) }))}`;
 }
 
 function ReportBrand({ className = "" }: { className?: string }) {
@@ -114,12 +116,50 @@ function ReportBrand({ className = "" }: { className?: string }) {
   );
 }
 
+function DoorRemainderManifest({ plan, language }: {
+  plan: ReturnType<typeof planMixedContainers>["containers"][number]; language: Language;
+}) {
+  const en = language === "en";
+  const positions = plan.doorStaging?.positions || [];
+  if (!positions.length) return null;
+  const ordered = [...positions].sort((a, b) => (a.mixedStackId || "").localeCompare(b.mixedStackId || "")
+    || a.x - b.x || a.y - b.y || a.baseHeight - b.baseHeight);
+  return <section className="door-remainder-manifest">
+    <h4>{en ? "DOOR-END REMAINDER MANIFEST · BOTTOM TO TOP" : "门端散箱清单 · 自下而上"}</h4>
+    <p>{en ? "Coordinates in mm from the closed end, effective left edge and floor. Keep each SKU separated and labelled. Red tape identifies partial cartons; nothing may bear on them."
+      : "坐标单位 mm：由箱头、有效装载区左侧和地板起算。不同 SKU 隔开并逐段标识；尾箱红色胶带封口，标注实际数量，上方禁止承重。"}</p>
+    {plan.stackSupport?.conditionalStacks > 0 ? <p role="note" className="report-securing-warning">{en
+      ? "CONDITIONAL MIXED STACK: full geometric support checked; compression capacity is NOT verified. Confirm carton compression, upper load, moisture and securing before execution. Cardboard/PE film is isolation, not a structural strength certificate."
+      : "混合竖垛为待批准方案：已检查完整几何支撑，尚未验证承压。必须复核纸箱抗压、上部重量、受潮影响与系固后执行；纸板 / PE 膜仅作隔离，不能视为承压证明。"}</p> : null}
+    <div className="door-manifest-scroll"><table className="report-table">
+      <thead><tr>{(en ? ["Stack / SKU", "Cartons / actual EA", "Floor X / Y", "Footprint L × W", "Height from floor", "Isolation / marking"]
+        : ["竖垛 / SKU", "箱数 / 实际 EA", "落地 X / Y", "占地长 × 宽", "距地高度", "隔离 / 标识"]).map((label) => <th key={label}>{label}</th>)}</tr></thead>
+      <tbody>{ordered.map((p, index) => {
+        const item = plan.blocks.find((b) => b.item.id === p.skuId)?.item;
+        const ea = p.cartons * (item?.eaPerBox || 0) - (p.partialCartonEa ? (item?.eaPerBox || 0) - p.partialCartonEa : 0);
+        const source = plan.positions.find((q) => q.skuId === p.skuId && q.x === p.x && q.y === p.y && (q.baseHeight || 0) === p.baseHeight);
+        return <tr key={`${p.skuId}-${index}`}>
+          <td>{p.mixedStackId || `R${index + 1}`}<br /><strong>{item?.code || item?.name || p.skuId}</strong></td>
+          <td>{formatNumber(p.cartons)} BOX<br />{formatNumber(ea)} EA</td>
+          <td>{formatNumber(p.x, 1)} / {formatNumber(p.y, 1)}</td>
+          <td>{formatNumber(p.w, 1)} × {formatNumber(p.h, 1)}</td>
+          <td>{formatNumber(p.baseHeight, 1)}–{formatNumber(p.baseHeight + p.stackHeight, 1)}</td>
+          <td>{source?.separatorBelowThickness ? `${en ? "Separator below" : "下方隔板"} ${source.separatorBelowThickness} mm` : en ? "SKU label" : "SKU 标识"}
+            {p.partialCartonEa ? <><br />{en ? "RED TAPE / TOP ONLY" : "红色胶带 / 置顶禁压"} · {p.partialCartonEa} EA</> : null}</td>
+        </tr>;
+      })}</tbody>
+    </table></div>
+  </section>;
+}
+
 function PalletPatternView({
   item,
   language,
+  report = false,
 }: {
   item: ReturnType<typeof planMixedContainers>["items"][number];
   language: Language;
+  report?: boolean;
 }) {
   if (item.packaging !== "pallet" || !item.palletPlan?.positions?.length)
     return null;
@@ -158,6 +198,7 @@ function PalletPatternView({
             : ` · ${isEnglish ? "FINAL TOP" : "末托顶层"} ${plan.finalTopLayerCartons}/${plan.cartonsPerLayer}`}
         </strong>
       </header>
+      <PalletRealViews item={item} language={language} eager={report} />
       <div className="pallet-pattern-body">
         <svg
           viewBox={`0 0 ${diagramL} ${diagramW}`}
@@ -249,14 +290,15 @@ function PalletPatternView({
             <rect width={diagramL} height={elevationHeight} fill="#f3f6f8" />
             <line x1="0" y1={plan.stackHeight + 8} x2={diagramL} y2={plan.stackHeight + 8} stroke="#9ba9b2" strokeWidth="8" />
             {Array.from({ length: plan.layersPerPallet }, (_, layerIndex) => {
-              const y = plan.stackHeight - item.pallet.h - (layerIndex + 1) * item.carton.h;
+              const pitch = (plan.stackHeight - item.pallet.h) / plan.layersPerPallet;
+              const y = plan.stackHeight - item.pallet.h - (layerIndex + 1) * pitch;
               return sideSegments.map((segment, segmentIndex) => (
                 <g key={`stack-${layerIndex}-${segment.x}-${segmentIndex}`}>
                   <rect
                     x={segment.x}
                     y={y}
                     width={segment.width}
-                    height={item.carton.h}
+                    height={pitch}
                     rx="8"
                     fill={`url(#stack-box-${safePatternId})`}
                     stroke="#356f98"
@@ -414,7 +456,7 @@ function MixedEndView({
     if (!positions.length) return;
     const occupiedArea = positions.reduce((sum, position) => {
       const block = plan.blocks.find((entry) => entry.item.id === position.skuId);
-      return sum + position.h * position.stackBoxes * (block?.item.loadingUnit.h ?? 0);
+      return sum + position.h * occupiedPositionHeight(position, block?.item);
     }, 0);
     sections.push({ startX, endX, positions, occupiedArea });
   });
@@ -477,8 +519,8 @@ function MixedEndView({
           if (!block) return null;
           const color = COLORS[Math.max(0, blockIndex) % COLORS.length];
           const unitHeight = block.item.loadingUnit.h;
-          const stackHeight = position.stackBoxes * unitHeight;
-          const top = container.h - stackHeight;
+          const stackHeight = occupiedPositionHeight(position, block.item);
+          const top = container.h - (position.baseHeight || 0) - stackHeight;
           const label = block.item.code || block.item.name || position.skuId;
           return (
             <g key={`${position.y}-${position.skuId}-${index}`}>
@@ -608,7 +650,7 @@ function MixedSideView({
         return {
           code: block?.item.code || block?.item.name || position.skuId,
           color: COLORS[Math.max(0, blockIndex) % COLORS.length],
-          height: position.stackBoxes * (block?.item.loadingUnit.h ?? 0),
+          height: (position.baseHeight || 0) + occupiedPositionHeight(position, block?.item),
           levels: position.stackBoxes,
           partial: Boolean(position.partialCartonEa),
           unitHeight: block?.item.loadingUnit.h ?? 0,
@@ -819,7 +861,7 @@ function MixedPlanCanvas({
 }) {
   const isEnglish = language === "en";
   const orderedPositions = [...plan.positions].sort(
-    (left, right) => left.x - right.x || left.y - right.y,
+    (left, right) => left.x - right.x || left.y - right.y || (left.baseHeight || 0) - (right.baseHeight || 0),
   );
   const visiblePositions = visiblePositionCount === undefined
     ? orderedPositions
@@ -894,7 +936,9 @@ function MixedPlanCanvas({
                 (block) => block.item.id === position.skuId,
               );
               const color = COLORS[Math.max(0, blockIndex) % COLORS.length];
-              const positionLabel = String(position.code || blockIndex + 1);
+              const hasUpperSegment = position.mixedStackId && visiblePositions.some((q) =>
+                q.mixedStackId === position.mixedStackId && (q.baseHeight || 0) > (position.baseHeight || 0));
+              const positionLabel = position.mixedStackId || String(position.code || blockIndex + 1);
               const textSize = Math.max(
                 36,
                 Math.min(
@@ -935,7 +979,7 @@ function MixedPlanCanvas({
                   <text x={position.x + 42} y={position.y + sideClearance + 50} textAnchor="middle" fill={color} fontSize="28" fontWeight="800">
                     {index + 1}
                   </text>
-                  <text
+                  {!hasUpperSegment ? <><text
                     x={position.x + position.w / 2}
                     y={position.y + sideClearance + position.h * 0.46}
                     textAnchor="middle"
@@ -969,6 +1013,7 @@ function MixedPlanCanvas({
                   >
                     {position.rotated ? "90°" : "0°"} · {formatNumber(position.w)}×{formatNumber(position.h)}
                   </text>
+                  </> : null}
                 </g>
               );
             })}
@@ -1134,6 +1179,10 @@ export default function MixedPlanner({
   const [palletGap, setPalletGap] = useState(initialConfig?.palletGap ?? 20);
   const [palletTolerance, setPalletTolerance] = useState(initialConfig?.palletTolerance ?? 10);
   const [edgeInset, setEdgeInset] = useState(initialConfig?.edgeInset ?? 10);
+  const [separatorThickness, setSeparatorThickness] = useState(initialConfig?.separatorThickness ?? 3);
+  const [palletMinHeight, setPalletMinHeight] = useState(initialConfig?.palletMinHeight ?? 1200);
+  const [palletHeightLimit, setPalletHeightLimit] = useState(initialConfig?.palletHeightLimit ?? 1800);
+  const [allowDoubleStack, setAllowDoubleStack] = useState(initialConfig?.allowDoubleStack ?? true);
   const allowSkuInterlock = true;
   const layoutStrategy = "maximum" as const;
   const [activeContainer, setActiveContainer] = useState(0);
@@ -1170,7 +1219,7 @@ export default function MixedPlanner({
   // run only after the operator pauses briefly, avoiding a full optimizer pass
   // for every digit or IME composition event.
   const calculationRows = useDebouncedValue(rows, 220);
-  const calculationsPending = calculationRows !== rows;
+  const inputPending = calculationRows !== rows;
 
   const applySharedPayload = useCallback((payload: SharedPlanPayload) => {
     const sharedRows = payload.rows.map((row, index) => ({
@@ -1198,6 +1247,10 @@ export default function MixedPlanner({
     if (Number.isFinite(config.palletGap)) setPalletGap(Number(config.palletGap));
     if (Number.isFinite(config.palletTolerance)) setPalletTolerance(Number(config.palletTolerance));
     if (Number.isFinite(config.edgeInset)) setEdgeInset(Number(config.edgeInset));
+    setSeparatorThickness(Number.isFinite(config.separatorThickness) ? Number(config.separatorThickness) : 3);
+    setPalletMinHeight(config.palletMinHeight ?? 1200);
+    setPalletHeightLimit(config.palletHeightLimit ?? 1800);
+    setAllowDoubleStack(config.allowDoubleStack !== false);
     setActiveContainer(0);
   }, [containers]);
 
@@ -1259,6 +1312,7 @@ export default function MixedPlanner({
             series: row.series,
             code: row.code,
             name: row.name,
+            productQuantity: row.productQuantity === "" ? undefined : Number(row.productQuantity),
             quantityRule: planningMode === "capacity" ? row.quantityRule : "fixed",
             kitCode: row.kitCode,
             minimumQuantity: row.minimumQuantity,
@@ -1296,6 +1350,8 @@ export default function MixedPlanner({
       palletTolerance,
       edgeInset,
       allowSkuInterlock,
+      separatorThickness,
+      palletMinHeight, palletHeightLimit, allowDoubleStack,
     }),
     [
       cartonTolerance,
@@ -1309,6 +1365,8 @@ export default function MixedPlanner({
       palletTolerance,
       edgeInset,
       allowSkuInterlock,
+      separatorThickness,
+      palletMinHeight, palletHeightLimit, allowDoubleStack,
     ],
   );
   const orderItems = useMemo(
@@ -1320,15 +1378,10 @@ export default function MixedPlanner({
     }),
     [baseItems, calculationRows],
   );
-  const capacityPlan = useMemo(
-    () => planningMode === "capacity"
-      ? optimizeProcurementQuantities(baseItems, container, {
-          ...loadingConfig,
-          containerCount: containerCount,
-        })
-      : null,
-    [planningMode, baseItems, container, loadingConfig, containerCount],
-  );
+  const search = usePlanningSearch({ items: planningMode === "capacity" ? baseItems : orderItems,
+    container, config: loadingConfig, mode: planningMode, containerCount });
+  const capacityPlan = search.capacity;
+  const calculationsPending = inputPending || search.pending;
   const validItems = useMemo(
     () => planningMode === "capacity"
       ? capacityPlan && !capacityPlan.error
@@ -1340,25 +1393,7 @@ export default function MixedPlanner({
       : orderItems,
     [planningMode, capacityPlan, baseItems, orderItems],
   );
-  const layoutOptions = useMemo(
-    () => planningMode === "capacity" && capacityPlan
-      ? [{
-          id: "maximum",
-          recommended: true,
-          candidateCount: capacityPlan.evaluations,
-          orderSearchComplete: false,
-          searchMethod: "quantity-and-geometry-search",
-          result: capacityPlan.result,
-        }]
-      : planMixedContainerOptions(validItems, container, loadingConfig),
-    [
-      planningMode,
-      capacityPlan,
-      validItems,
-      container,
-      loadingConfig,
-    ],
-  );
+  const layoutOptions = search.options;
   const result = useMemo(
     () => layoutOptions.find((option) => option.id === layoutStrategy)?.result
       ?? layoutOptions[0]?.result
@@ -1436,6 +1471,7 @@ export default function MixedPlanner({
   }, [planningMode, capacityPlan, calculationRows, result.containers.length, containerCount, tr]);
   const reportReady =
     !calculationsPending &&
+    !search.error &&
     validItems.length > 0 &&
     incompleteRows.length === 0 &&
     preflight.ok &&
@@ -1445,7 +1481,7 @@ export default function MixedPlanner({
     result.containers[
       Math.min(activeContainer, Math.max(0, result.containers.length - 1))
     ];
-  const currentPlaybackPlanKey = `${containerType}-${selectedPlan?.index ?? 0}-${result.totalRequiredBoxes}`;
+  const currentPlaybackPlanKey = selectedPlan ? loadingSceneKey(containerType, selectedPlan, loadingConfig) : "";
   const playbackTotal = selectedPlan?.positions.length ?? 0;
   const playbackIsCurrent = playbackPlanKey === currentPlaybackPlanKey;
   const playbackVisible = !playbackIsCurrent || playbackStep < 0
@@ -1486,7 +1522,9 @@ export default function MixedPlanner({
   const palletTopActionRequired = result.containers.some(
     (plan) => plan.incompletePalletTops > 0,
   );
-  const executionConditional = securingRequired || palletTopActionRequired;
+  const stackingApprovalRequired = result.containers.some(plan =>
+    plan.stackSupport?.conditionalStacks > 0 || plan.stackSupport?.conditionalPalletStacks > 0);
+  const executionConditional = securingRequired || palletTopActionRequired || stackingApprovalRequired;
   const chosenLayoutOption = layoutOptions.find(
     (option) => option.id === layoutStrategy,
   ) ?? layoutOptions[0];
@@ -1497,12 +1535,12 @@ export default function MixedPlanner({
       )
     : chosenLayoutOption?.orderSearchComplete
       ? tr(
-          `已完整比较 ${chosenLayoutOption.candidateCount} 种 SKU 装载顺序；按柜数最少、总占长最短择优，并逐项通过几何复核。`,
-          `All ${chosenLayoutOption.candidateCount} SKU loading sequences were compared; the result minimizes container count then used length and passes the item-level geometry audit.`,
+          `已完整比较 ${chosenLayoutOption.candidateCount} 种 SKU 装载顺序；优先减少柜数，再减少内部空隙和占长，并逐项通过几何复核。此为候选搜索结果，非全局最优证明。`,
+          `All ${chosenLayoutOption.candidateCount} SKU loading sequences were compared, prioritizing fewer containers, smaller internal voids and shorter loads. Geometry checks passed; this is not a proof of global optimality.`,
         )
       : tr(
-          `已比较 ${chosenLayoutOption?.candidateCount ?? 0} 种确定性装载顺序；在已搜索候选中按柜数最少、总占长最短择优，并逐项通过几何复核。`,
-          `${chosenLayoutOption?.candidateCount ?? 0} deterministic loading sequences were compared; the best searched candidate minimizes container count then used length and passes the item-level geometry audit.`,
+          `已比较 ${chosenLayoutOption?.candidateCount ?? 0} 种确定性装载顺序；在已搜索候选中优先减少柜数、内部空隙和占长，并通过几何复核。此为候选搜索结果，非全局最优证明。`,
+          `${chosenLayoutOption?.candidateCount ?? 0} deterministic sequences were compared, prioritizing fewer containers, smaller internal voids and shorter loads. Geometry checks passed; global optimality is not proven.`,
         );
   const reportDate = new Intl.DateTimeFormat(isEnglish ? "en-GB" : "zh-CN", {
     year: "numeric",
@@ -1578,6 +1616,8 @@ export default function MixedPlanner({
               palletGap,
               palletTolerance,
               edgeInset,
+              separatorThickness,
+              palletMinHeight, palletHeightLimit, allowDoubleStack,
               allowSkuInterlock,
               layoutStrategy,
             },
@@ -1658,11 +1698,13 @@ export default function MixedPlanner({
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
     }
     const expectedSnapshotCount = result.containers.length * 4;
+    const expectedPalletPlateCount = result.items.filter(item => item.packaging === "pallet").length * 3;
     for (let attempt = 0; attempt < 60; attempt += 1) {
       const snapshotCount = document.querySelectorAll(
         ".mixed-print-report .report-scene-snapshot[data-view] img[src^='data:image/']",
       ).length;
-      if (snapshotCount >= expectedSnapshotCount) break;
+      const palletPlateCount = document.querySelectorAll(".mixed-print-report [data-pallet-view] img[src^='data:image/']").length;
+      if (snapshotCount >= expectedSnapshotCount && palletPlateCount >= expectedPalletPlateCount) break;
       await new Promise((resolve) => window.setTimeout(resolve, 100));
     }
     const report = document.querySelector<HTMLElement>(".mixed-print-report");
@@ -1683,6 +1725,8 @@ export default function MixedPlanner({
         []),
     ];
     const structureErrors: string[] = [];
+    if ((report?.querySelectorAll("[data-pallet-view] img[src^='data:image/']").length ?? 0) < expectedPalletPlateCount)
+      structureErrors.push(tr("托盘实景三视图尚未生成完整，请稍后打印。", "Pallet plates are incomplete; wait before printing."));
     if (!report)
       structureErrors.push(
         tr("正式报告结构不存在。", "Formal report markup is missing."),
@@ -1864,6 +1908,8 @@ export default function MixedPlanner({
       palletGap,
       palletTolerance,
       edgeInset,
+      separatorThickness,
+      palletMinHeight, palletHeightLimit, allowDoubleStack,
     },
     summary: {
       skuCount: validItems.length,
@@ -2110,8 +2156,8 @@ export default function MixedPlanner({
             )}
           >
             <span>
-              {calculationsPending
-                ? tr("输入已更新，正在复核最优排布…", "Input updated; verifying the optimal layout…")
+              {search.error ? tr(`计算未完成：${search.error}`, `Calculation failed: ${search.error}`) : calculationsPending
+                ? tr("输入已更新，正在搜索并校核排布…", "Input updated; searching and auditing layouts…")
                 : tr("安全规则已启用：向上 · 可旋转 · 防重叠 · 尾箱门端优先", "Safety rules active: upright · rotation · no overlap · partial carton door-side priority")}
             </span>
           </div>
@@ -2189,6 +2235,23 @@ export default function MixedPlanner({
                     setEdgeInset(Math.max(0, Number(event.target.value)))
                   }
                 />
+              </label>
+              <label>
+                {tr("混垛隔板厚度 mm", "Mixed-stack separator mm")}
+                <input type="number" min="0" max="100" step="0.1" value={separatorThickness}
+                  onChange={(event) => setSeparatorThickness(Math.max(0, Number(event.target.value)))} />
+              </label>
+              <label>{tr("单托含货最低高度 mm", "Minimum loaded-pallet height mm")}
+                <input type="number" min="1" value={palletMinHeight} onChange={e => setPalletMinHeight(Number(e.target.value))} />
+              </label>
+              <label>{tr("单托含货最高高度 mm", "Maximum loaded-pallet height mm")}
+                <input type="number" min="1" value={palletHeightLimit} onChange={e => setPalletHeightLimit(Number(e.target.value))} />
+              </label>
+              <label>{tr("托盘叠放候选", "Pallet stack candidates")}
+                <select value={allowDoubleStack ? "two" : "one"} onChange={e => setAllowDoubleStack(e.target.value === "two")}>
+                  <option value="two">{tr("比较一层 / 二层（承压待确认）", "Compare 1 / 2 levels; strength approval required")}</option>
+                  <option value="one">{tr("仅一层托盘", "Single level only")}</option>
+                </select>
               </label>
               <label>
                 {tr("SKU 分区间隙 mm", "SKU zone gap mm")}
@@ -2541,7 +2604,7 @@ export default function MixedPlanner({
           {planningMode === "capacity" && baseItems.length ? (
             <div className={`kit-capacity-banner${capacityPlan && !capacityPlan.error ? " ready" : " error"}`}>
               <div>
-                <span>{completeKits !== null ? tr("最大齐套数量", "MAXIMUM COMPLETE SETS") : tr("最优采购组合", "OPTIMIZED PROCUREMENT MIX")}</span>
+                <span>{completeKits !== null ? tr("已验证齐套装量", "AUDITED COMPLETE SETS") : tr("推荐采购组合", "RECOMMENDED PROCUREMENT MIX")}</span>
                 <strong>{capacityPlan && !capacityPlan.error ? formatNumber(completeKits ?? result.totalDemandEa) : "—"}</strong>
                 <b>{completeKits !== null ? "SET" : "EA"}</b>
               </div>
@@ -2552,8 +2615,8 @@ export default function MixedPlanner({
                       `${validItems.length} SKUs, ${formatNumber(result.totalDemandEa)} component EA and ${formatNumber(result.totalRequiredBoxes)} cartons; ${capacityPlan.evaluations} physical candidates were evaluated and the selected mix passed the full geometry audit${capacityPlan.residualCapacityVerified ? "; no permitted decision group can accept one additional EA" : ""}.`,
                     )
                   : tr(
-                      `当前约束没有可执行方案：${capacityPlan?.error || "请检查数据"}`,
-                      `No executable mix under the current constraints: ${capacityPlan?.error || "check the data"}`,
+                      calculationsPending ? "正在比较排布候选，请稍候…" : `搜索尚未找到通过校核的方案：${capacityPlan?.error || search.error || "请检查数据"}`,
+                      calculationsPending ? "Comparing loading candidates…" : `No audited candidate found: ${capacityPlan?.error || search.error || "check the data"}`,
                     )}
               </p>
             </div>
@@ -2675,7 +2738,7 @@ export default function MixedPlanner({
               <strong>
                 {tr("纵向", "Length")} {formatNumber(selectedPlan.lengthUse, 1)}
                 % · {tr("中段最大间隙", "Max internal gap")} {formatNumber(selectedPlan.maximumInternalVoid)} mm
-                · {tr("门端通道余量", "Door-lane free")} {formatNumber(selectedPlan.maximumRowEndVoid)} mm
+                · {tr("整幅门端净余量", "Full-width door clearance")} {formatNumber(selectedPlan.remainingLength + doorClearance)} mm
               </strong>
             </div>
             {selectedPlan.incompletePalletTops ? (
@@ -2700,12 +2763,13 @@ export default function MixedPlanner({
                 </b>
                 <span>
                   {tr(
-                    `本柜最大连续水平空隙 ${formatNumber(selectedPlan.maximumHorizontalVoid)} mm（柜门端净余 ${formatNumber(selectedPlan.remainingLength)} mm），超过 150 mm。须补充计划内货物，或按现场批准方案固定并签字复核。`,
-                    `The maximum continuous horizontal void is ${formatNumber(selectedPlan.maximumHorizontalVoid)} mm (${formatNumber(selectedPlan.remainingLength)} mm net at the door end), exceeding 150 mm. Add planned cargo or secure it under an approved site method and obtain sign-off.`,
+                    `按设计包络计算：同一水平截线空隙合计最大 ${formatNumber(selectedPlan.stowVoids.maximumCumulative)} mm；最小整幅门端余量 ${formatNumber(selectedPlan.remainingLength + doorClearance)} mm（含预留 ${doorClearance} mm）。存在需处置空隙，须现场批准填充 / 挡固 / 系固并签字复核。`,
+                    `Design envelope: maximum cumulative horizontal void ${formatNumber(selectedPlan.stowVoids.maximumCumulative)} mm; minimum full-width door residual ${formatNumber(selectedPlan.remainingLength + doorClearance)} mm (including ${doorClearance} mm reserved). Voids require approved filling / blocking / securing and sign-off.`,
                   )}
                 </span>
               </div>
             ) : null}
+            <DoorRemainderManifest plan={selectedPlan} language={language} />
             <div className="loading-playback" aria-label={tr("装柜流水线演示", "Loading sequence playback")}>
               <button
                 className="primary"
@@ -2759,8 +2823,8 @@ export default function MixedPlanner({
                   doorHeight={result.config.doorHeight}
                   language={language}
                   visiblePositionCount={playbackVisible}
-                  snapshotId={loadingSceneKey(containerType, selectedPlan)}
-                  onSnapshots={(snapshots) => storeSceneSnapshots(loadingSceneKey(containerType, selectedPlan), snapshots)}
+                  snapshotId={loadingSceneKey(containerType, selectedPlan, loadingConfig)}
+                  onSnapshots={(snapshots) => storeSceneSnapshots(loadingSceneKey(containerType, selectedPlan, loadingConfig), snapshots)}
                 />
               </Suspense>
             ) : null}
@@ -2920,7 +2984,7 @@ export default function MixedPlanner({
           <div>
             <ReportBrand className="report-brand-logo" />
             <p>
-              {tr("装载工程报告", "LOADING ENGINEERING REPORT")}
+              {tr("装柜工程报告", "LOADING ENGINEERING REPORT")}
             </p>
             <h1>
               {planningMode === "capacity"
@@ -3121,7 +3185,7 @@ export default function MixedPlanner({
                         ? <>
                             <b>{tr("托盘", "PALLET")} · {item.pallet.l} × {item.pallet.w} × {item.pallet.h} mm</b>
                             <small>
-                              {calculated?.palletPlan.overhang > 0
+                              {calculated && calculated.palletPlan.overhang > 0
                                 ? `${tr("允许外伸", "Overhang")} ${calculated.palletPlan.overhang} mm/side`
                                 : `${tr("退边", "Inset")} ${calculated?.palletPlan.edgeInset ?? 0} mm/side`}
                               {calculated ? ` · ${formatNumber(calculated.loadingUnit.l)} × ${formatNumber(calculated.loadingUnit.w)} mm` : ""}
@@ -3164,6 +3228,7 @@ export default function MixedPlanner({
                       key={item.id}
                       item={item}
                       language={language}
+                      report={Boolean(htmlReportOpen)}
                     />
                   ))}
               </div>
@@ -3203,11 +3268,11 @@ export default function MixedPlanner({
             <li>
               {tr(
                 planningMode === "capacity"
-                  ? "按柜容反算时，系统在固定、可调和齐套约束内持续增加采购数量，直至任何允许增加的产品组再增加 1 EA 均无法通过整箱占位与几何校核；最终不可用余量归并在柜门内。"
-                  : "按订单量规划时，系统不得虚增订单箱数；现有纸箱先通过多 SKU 交错压实箱头和中段，真实剩余空间统一归并在柜门内，并按报告要求挡固、填充或系固。",
+                  ? "按柜容反算时，系统比较数量与整垛边界候选，在固定、可调和齐套约束内择优；每个接受的方案必须通过几何与数量校核。启发式搜索不代表已证明全局最大装量。"
+                  : "按订单量规划时，系统不得虚增箱数。满垛向箱头排紧，散箱集中门端；放不下时转入下一柜或明确报告未装完。剩余空隙按真实坐标披露并处理。",
                 planningMode === "capacity"
-                  ? "In capacity mode, quantities are increased within fixed, adjustable and kit constraints until adding 1 EA to any permitted decision group can no longer pass full-carton occupancy and geometry checks; final unusable space is consolidated inside the door end."
-                  : "In order mode, the planner must not invent cartons. Existing cartons are compacted from the closed end with controlled multi-SKU interlocking, and genuine residual space is consolidated inside the door end for blocking, filling or securing as specified.",
+                  ? "Capacity mode compares quantity and full-stack boundary candidates under fixed, adjustable and kit constraints. Every accepted result passes geometry and count checks. Heuristic search is not proof of the global maximum."
+                  : "Order mode never invents cartons. Full stacks compact towards the front and remainders stay at the door; overflow moves to another container or is explicitly unplanned. Real residual voids must be disclosed and treated.",
               )}
             </li>
             <li>
@@ -3218,8 +3283,8 @@ export default function MixedPlanner({
             </li>
             <li>
               {tr(
-                "单一水平方向空隙合计不得超过 150 mm；超过时须按本报告警示补货或采用经批准的挡木、填充、支撑/系固方案并签字后封柜。图中红色斜纹为柜门禁放区，任何包装不得越过有效装载边界。",
-                "Total void in any horizontal direction must not exceed 150 mm. Where exceeded, add planned cargo or use approved blocking, filling, bracing/securing and obtain sign-off before closing. The red hatched strip is the door no-load zone; no package may cross the effective loading boundary.",
+                "本工具以单一水平方向累计空隙 150 mm 作为工程复核触发值，不是普适安全保证。超过时须按警示采用经批准的挡木、填充、支撑/系固方案并签字后封柜。实景不绘制柜体，尺寸以报告有效边界为准，任何包装不得越界。",
+                "A cumulative horizontal void of 150 mm triggers an engineering review in this tool, not a universal safety guarantee. Obtain approved blocking, filling, bracing/securing and sign-off where triggered. Cargo views omit the container shell; no package may exceed the reported effective boundaries.",
               )}
             </li>
             <li>
@@ -3230,8 +3295,8 @@ export default function MixedPlanner({
             </li>
             <li>
               {tr(
-                "本报告自动采用通过边界、间隙与高度校验的最紧凑装载方案；默认禁止不同 SKU 上下混堆。本报告不替代承重与现场安全校核。",
-                "This report automatically uses the most compact layout that passes boundary, clearance and height checks. Vertical stacking between different SKUs is prohibited by default. This report does not replace load-bearing or site safety checks.",
+                `本报告为已搜索候选中的推荐方案，不宣称已证明全局最大装量。满垛向箱头排紧，余箱统一在门端；门端分放容纳不下时，允许完整底面支撑的混合竖垛，跨 SKU 隔板按 ${separatorThickness} mm 计入高度，并须取得承压复核依据。禁止在尾箱上承重。不可消除的空隙须按图处理，不得用图形遮盖或虚构填满。`,
+                `This is the recommended searched candidate, not a proven global maximum. Full columns compact towards the closed end; remainders stay at the door. When separate columns cannot fit, mixed columns require full footprint support, ${separatorThickness} mm separators and compression approval. Never load above a partial carton. Residual voids must be treated as shown, never hidden or fictitiously filled.`,
               )}
             </li>
           </ol>
@@ -3264,7 +3329,7 @@ export default function MixedPlanner({
               <span>
                 {tr("纵向占用", "LENGTH USE")} {formatNumber(plan.lengthUse, 1)}
                 % · {tr("中段最大间隙", "MAX INTERNAL GAP")} {formatNumber(plan.maximumInternalVoid)} mm
-                · {tr("门端通道余量", "DOOR-LANE FREE")} {formatNumber(plan.maximumRowEndVoid)} mm
+                · {tr("整幅门端净余量", "FULL-WIDTH DOOR CLEARANCE")} {formatNumber(plan.remainingLength + doorClearance)} mm
               </span>
             </div>
             {plan.requiresSecuring ? (
@@ -3277,12 +3342,13 @@ export default function MixedPlanner({
                 </b>
                 <span>
                   {tr(
-                    `最大连续水平空隙 ${formatNumber(plan.maximumHorizontalVoid)} mm（柜门端净余 ${formatNumber(plan.remainingLength)} mm），超过 150 mm。封柜前须补充计划内货物，或按现场批准方案设置挡木、填充、支撑/系固，并由复核人签字。`,
-                    `The maximum continuous horizontal void is ${formatNumber(plan.maximumHorizontalVoid)} mm (${formatNumber(plan.remainingLength)} mm net at the door end), exceeding 150 mm. Before closing, add planned cargo or install approved blocking, filling, bracing/securing and obtain checker sign-off.`,
+                    `按设计包络计算：同一水平截线空隙合计最大 ${formatNumber(plan.stowVoids.maximumCumulative)} mm；最小整幅门端余量 ${formatNumber(plan.remainingLength + doorClearance)} mm（含预留 ${doorClearance} mm）。存在需处置空隙，封柜前必须完成经批准的填充、挡固或系固，并签字。`,
+                    `Design envelope: maximum cumulative horizontal void ${formatNumber(plan.stowVoids.maximumCumulative)} mm; minimum full-width door residual ${formatNumber(plan.remainingLength + doorClearance)} mm (including ${doorClearance} mm reserved). Complete approved void filling, blocking or securing and sign off before closing.`,
                   )}
                 </span>
               </div>
             ) : null}
+            <DoorRemainderManifest plan={plan} language={language} />
             {plan.incompletePalletTops ? (
               <div className="report-securing-warning report-pallet-top-warning">
                 <b>{tr(
@@ -3307,12 +3373,12 @@ export default function MixedPlanner({
                   doorHeight={result.config.doorHeight}
                   language={language}
                   eager
-                  snapshotId={loadingSceneKey(containerType, plan)}
-                  onSnapshots={(snapshots) => storeSceneSnapshots(loadingSceneKey(containerType, plan), snapshots)}
+                  snapshotId={loadingSceneKey(containerType, plan, loadingConfig)}
+                  onSnapshots={(snapshots) => storeSceneSnapshots(loadingSceneKey(containerType, plan, loadingConfig), snapshots)}
                 />
               </Suspense>
             ) : null}
-            {sceneSnapshots[loadingSceneKey(containerType, plan)] ? (
+            {sceneSnapshots[loadingSceneKey(containerType, plan, loadingConfig)] ? (
               <section className="report-scene-snapshots" aria-label={tr("实景装柜标准视图", "Realistic standard loading views")}>
                 {([
                   ["perspective", tr("三维实景", "PERSPECTIVE")],
@@ -3324,7 +3390,7 @@ export default function MixedPlanner({
                     {/* Data-URL evidence plates are generated from the audited WebGL scene and cannot use an image optimizer. */}
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={sceneSnapshots[loadingSceneKey(containerType, plan)][view]}
+                      src={sceneSnapshots[loadingSceneKey(containerType, plan, loadingConfig)][view]}
                       alt={`${containerType} · ${label}`}
                     />
                     <figcaption>
@@ -3333,7 +3399,7 @@ export default function MixedPlanner({
                         {view === "top"
                           ? `${formatNumber(container.l - doorClearance)} × ${formatNumber(container.w - sideClearance * 2)} mm`
                           : view === "door"
-                            ? `${formatNumber(result.config.doorWidth)} × ${formatNumber(result.config.doorHeight)} mm`
+                            ? `${formatNumber(container.w - sideClearance * 2)} × ${formatNumber(container.h - topClearance)} mm · ${tr("有效断面，非门洞", "effective section, not door aperture")}`
                             : view === "side"
                               ? `${formatNumber(container.l - doorClearance)} × ${formatNumber(container.h - topClearance)} mm`
                               : tr("同一几何数据源生成", "Generated from the same geometry source")}
@@ -3473,7 +3539,7 @@ export default function MixedPlanner({
           <span>{tr("□ 托盘边界、层数、总高、顶面平整与缠膜余量已复核", "□ Pallet boundary, layers, loaded height, level top and wrap allowance verified")}</span>
           <span>{tr("□ SKU 交错边界已用纸板或 PE 膜隔离并按图标识", "□ Interlocked SKU boundaries separated with cardboard or PE film and marked to plan")}</span>
           <span>{tr("□ 尾箱已填充、红色胶带封口、标注产品与 EA，并置于门端最后可访问位", "□ Partial cartons filled, red-tape sealed, product/EA marked and placed at the final door-side accessible position")}</span>
-          <span>{tr("□ 仅门端保留最终余量，挡固、填充、支撑/系固方案已落实", "□ Final residual void retained only at the door end and blocking/filling/bracing completed")}</span>
+          <span>{tr("□ 图示门端余量及其它不可消除空隙已逐项处置，挡固、填充或系固已落实", "□ Door residuals and all other reported voids have approved blocking, filling or securing")}</span>
           <span>{tr("□ 总载重、轴载、重心与纸箱抗压已由责任人员确认", "□ Payload, axle load, centre of gravity and carton compression approved")}</span>
           <span>{tr("□ 柜号、封条号与现场照片已归档", "□ Container number, seal number and loading photos archived")}</span>
           </div>

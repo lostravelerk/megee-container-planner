@@ -44,6 +44,10 @@ export type PlannerConfig = {
   palletGap: number;
   palletTolerance: number;
   edgeInset: number;
+  separatorThickness?: number;
+  palletMinHeight?: number;
+  palletHeightLimit?: number;
+  allowDoubleStack?: boolean;
 };
 
 export type PlannerSnapshot = {
@@ -73,4 +77,3 @@ export type SavedPlanRecord = PlannerSnapshot & {
   createdAt: string;
   updatedAt: string;
 };
-
